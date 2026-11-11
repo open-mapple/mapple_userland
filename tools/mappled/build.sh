@@ -1,13 +1,13 @@
 #!/bin/bash
-# Builds vivad (tools/vivad/vivad.c) and its companions for the phone: iOS 16 arm64, ad-hoc signed.
+# Builds mappled (tools/mappled/mappled.c) and its companions for the phone: iOS 16 arm64, ad-hoc signed.
 # Uses Xcode's iOS SDK when present (the xnu CI job builds them into the xnu-kernel artifact).
 # Without it (Command Line Tools only) it compiles against the macOS SDK headers with
 # -target arm64-apple-ios16.0 and links against a libSystem .tbd generated from the objects'
 # undefined symbols (everything these tools use lives in libSystem).
-# Usage: tools/vivad/build.sh [OUT]   (OUT = path of vivad; the others go next to it)
+# Usage: tools/mappled/build.sh [OUT]   (OUT = path of mappled; the others go next to it)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="${1:-$HERE/out/vivad}"
+OUT="${1:-$HERE/out/mappled}"
 DIR="$(dirname "$OUT")"
 mkdir -p "$DIR"
 
@@ -42,12 +42,12 @@ else
   }
 fi
 
-build "$OUT" "$HERE/vivad.c"
+build "$OUT" "$HERE/mappled.c"
 file "$OUT"
-# vln (symbolic links: iOS has no ln), next to vivad
+# vln (symbolic links: iOS has no ln), next to mappled
 build "$DIR/vln" "$HERE/vln.c"
-# vbootrec (raw VIVABOOT record, tools/viva-link.py bootrec), next to vivad
-build "$DIR/vbootrec" "$HERE/vbootrec.c"
-# vivausbd (PTP + usbmux of the std USB persona, docs/VIVA-USB-PERSONA.md), next to vivad
-build "$DIR/vivausbd" "$HERE/vivausbd.c"
-file "$DIR/vivausbd"
+# bootrec (raw MAPPLEBR record, tools/mapple-link.py bootrec), next to mappled
+build "$DIR/bootrec" "$HERE/bootrec.c"
+# mapple-usbd (PTP + usbmux of the std USB persona, docs/VIVA-USB-PERSONA.md), next to mappled
+build "$DIR/mapple-usbd" "$HERE/mapple-usbd.c"
+file "$DIR/mapple-usbd"

@@ -1,4 +1,4 @@
-"""Shared pieces of the vivausbd tests: the framed test-socket endpoint (vivausbd --test-sock)."""
+"""Shared pieces of the mapple-usbd tests: the framed test-socket endpoint (mapple-usbd --test-sock)."""
 import socket
 import threading
 import struct

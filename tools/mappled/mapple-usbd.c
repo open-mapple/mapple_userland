@@ -1,17 +1,17 @@
 /*
- * vivausbd: the "standard iPhone" USB functions of the viva phone (patch 0182,
- * docs/VIVA-USB-PERSONA.md). The kernel (bsd/dev/viva_usb.c) only moves bulk
- * transfers through /dev/vivaptp and /dev/vivamux; this daemon speaks the
- * protocols, so a Mac/PC without the Viva Link tool sees an iPhone:
+ * mapple-usbd: the "standard iPhone" USB functions of the viva phone (patch 0182,
+ * docs/VIVA-USB-PERSONA.md). The kernel (bsd/dev/usb_link.c) only moves bulk
+ * transfers through /dev/linkptp and /dev/linkmux; this daemon speaks the
+ * protocols, so a Mac/PC without the Mapple link tool sees an iPhone:
  *   - PTP/MTP responder (Image Capture, Photos, Windows Explorer) over
  *     /private/var/mobile/Media;
  *   - the usbmux device side (Finder/iTunes/libimobiledevice -> lockdownd and
  *     the services lockdownd starts), bridged to localhost TCP.
  *
  * Startup: UDID from MobileGestalt (fallback: SHA-1 of IOPlatformUUID or of a
- * random seed kept in /private/var/root/.vivausbd-udid; logged),
- * open both nodes (retried until they exist), VIVAUSB_SET_SERIAL(UDID),
- * VIVAUSB_ATTACH. Threads: mux reader, mux writer, mux socket poller, PTP
+ * random seed kept in /private/var/root/.mapple-usbd-udid; logged),
+ * open both nodes (retried until they exist), USBLINK_SET_SERIAL(UDID),
+ * USBLINK_ATTACH. Threads: mux reader, mux writer, mux socket poller, PTP
  * reader, PTP responder. The nodes do not support poll/select: blocking
  * read() in dedicated threads. read() == -1/ECONNRESET (bus reset, unplug,
  * SET_CONFIGURATION 0): all usbmux connections, the version/seq state and the
@@ -69,18 +69,18 @@
  * (class CANCEL_REQUEST / DEVICE_RESET) aborts the current transaction.
  *
  * ----------------------------------------------------------------- build ---
- *   tools/vivad/build.sh (iOS SDK; CI: .github/workflows/xnu.yml) -> out/vivausbd
- *   macOS test build:  clang -O2 -Wall -o /tmp/vivausbd tools/vivad/vivausbd.c -lpthread
- *   tests: python3 tools/vivad/tests/run_tests.py
+ *   tools/mappled/build.sh (iOS SDK; CI: .github/workflows/xnu.yml) -> out/mapple-usbd
+ *   macOS test build:  clang -O2 -Wall -o /tmp/mapple-usbd tools/mappled/mapple-usbd.c -lpthread
+ *   tests: python3 tools/mappled/tests/run_tests.py
  *
  * ---------------------------------------------------------------- launchd ---
- * Root LaunchDaemon com.viva.vivausbd, RunAtLoad + KeepAlive, stderr on the
- * console, added to the launchd job cache like vivad:
- *   tools/viva-link.py pull /System/Library/xpc/launchd.plist launchd.plist
- *   tools/viva-launchd-add.py launchd.plist launchd-new.plist \
- *       /usr/libexec/vivausbd com.viva.vivausbd
- *   tools/viva-link.py push tools/vivad/out/vivausbd /usr/libexec/vivausbd 755
- *   tools/viva-link.py push launchd-new.plist /System/Library/xpc/launchd.plist 644
+ * Root LaunchDaemon org.openmapple.mapple-usbd, RunAtLoad + KeepAlive, stderr on the
+ * console, added to the launchd job cache like mappled:
+ *   tools/mapple-link.py pull /System/Library/xpc/launchd.plist launchd.plist
+ *   tools/launchd-add.py launchd.plist launchd-new.plist \
+ *       /usr/libexec/mapple-usbd org.openmapple.mapple-usbd
+ *   tools/mapple-link.py push tools/mappled/out/mapple-usbd /usr/libexec/mapple-usbd 755
+ *   tools/mapple-link.py push launchd-new.plist /System/Library/xpc/launchd.plist 644
  *
  * Options: --udid X, --root DIR (PTP storage), --map PORT=HOST:PORT or
  * PORT=/unix/socket (repeatable; replaces the default targets of PORT),
@@ -116,14 +116,14 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "vivausb.h"
+#include "usblink.h"
 
-#define PTP_DEV      "/dev/vivaptp"
-#define MUX_DEV      "/dev/vivamux"
+#define PTP_DEV      "/dev/linkptp"
+#define MUX_DEV      "/dev/linkmux"
 #define MEDIA_ROOT   "/private/var/mobile/Media"
 #define LOCKDOWN_PORT 62078
 #define LOCKDOWN_SOCK "/var/run/lockdown.sock"
-#define UDID_FILE    "/private/var/root/.vivausbd-udid"
+#define UDID_FILE    "/private/var/root/.mapple-usbd-udid"
 
 static int verbose;
 static uid_t own_uid = 501;
@@ -139,7 +139,7 @@ logm(const char *fmt, ...)
 	va_start(ap, fmt);
 	vsnprintf(buf, sizeof(buf), fmt, ap);
 	va_end(ap);
-	fprintf(stderr, "vivausbd: %s\n", buf);
+	fprintf(stderr, "mapple-usbd: %s\n", buf);
 }
 #define vlog(...) do { if (verbose) logm(__VA_ARGS__); } while (0)
 
@@ -2170,7 +2170,7 @@ mark_gone(uint32_t h)
 static uint32_t pend_handle;    /* object announced by SendObjectInfo, waiting for SendObject */
 static uint64_t pend_size;
 
-/* ---- battery: CurrentCapacity/MaxCapacity of the IOPMPowerSource (VivaBattery), via dlopen'ed IOKit */
+/* ---- battery: CurrentCapacity/MaxCapacity of the IOPMPowerSource (BQ27Z561Battery), via dlopen'ed IOKit */
 
 static int
 battery_level(void)
@@ -2708,7 +2708,7 @@ ptp_responder(void *arg)
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: vivausbd [-v] [--udid X] [--root DIR] [--map PORT=HOST:PORT|PORT=/sock]..\n"
+	fprintf(stderr, "usage: mapple-usbd [-v] [--udid X] [--root DIR] [--map PORT=HOST:PORT|PORT=/sock]..\n"
 	    "                [--owner UID:GID] [--no-ptp] [--no-mux] [--test-sock DIR]\n");
 	exit(2);
 }
@@ -2778,15 +2778,15 @@ main(int argc, char **argv)
 		return 1;
 	}
 	if (!testdir) {
-		struct vivausb_serial s;
+		struct usblink_serial s;
 		memset(&s, 0, sizeof(s));
 		strlcpy(s.s, udid, sizeof(s.s));
-		if (ioctl(mux_ep.fd, VIVAUSB_SET_SERIAL, &s) < 0) {
-			logm("VIVAUSB_SET_SERIAL: %s", strerror(errno));
+		if (ioctl(mux_ep.fd, USBLINK_SET_SERIAL, &s) < 0) {
+			logm("USBLINK_SET_SERIAL: %s", strerror(errno));
 		}
-		if (ioctl(mux_ep.fd, VIVAUSB_ATTACH) < 0) {
-			/* EPERM = vivausbstd=0: the link persona stays; keep the nodes open anyway */
-			logm("VIVAUSB_ATTACH: %s", strerror(errno));
+		if (ioctl(mux_ep.fd, USBLINK_ATTACH) < 0) {
+			/* EPERM = mp_usblink_std=0: the link persona stays; keep the nodes open anyway */
+			logm("USBLINK_ATTACH: %s", strerror(errno));
 		}
 	}
 	logm("ready (storage %s%s)", storage_root, testdir ? ", test sockets" : "");

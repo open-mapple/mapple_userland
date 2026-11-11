@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PTP/MTP initiator for vivausbd --test-sock (run by run_tests.py; main(sockdir, root, udid))."""
+"""PTP/MTP initiator for mapple-usbd --test-sock (run by run_tests.py; main(sockdir, root, udid))."""
 import os
 import struct
 import sys

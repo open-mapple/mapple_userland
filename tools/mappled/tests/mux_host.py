@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""usbmux host emulator for vivausbd --test-sock: speaks what usbmuxd (src/device.c) sends.
+"""usbmux host emulator for mapple-usbd --test-sock: speaks what usbmuxd (src/device.c) sends.
 
 Run by run_tests.py, which starts the plist server, the daemon (--test-sock DIR
 --map 62078=127.0.0.1:<plist server>) and calls main().

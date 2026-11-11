@@ -1,8 +1,8 @@
 /*
- * vln: symbolic links on the phone (iOS has no ln). Built next to vivad (tools/vivad/build.sh), pushed to
- * /private/var/root/viva-tests/vln, run through the USB link:
- *   tools/viva-link.py run /private/var/root/viva-tests/vln TARGET LINK   replace LINK by a symlink to TARGET
- *   tools/viva-link.py run /private/var/root/viva-tests/vln -r LINK       print where LINK points
+ * vln: symbolic links on the phone (iOS has no ln). Built next to mappled (tools/mappled/build.sh), pushed to
+ * /private/var/root/mapple-dev/vln, run through the USB link:
+ *   tools/mapple-link.py run /private/var/root/mapple-dev/vln TARGET LINK   replace LINK by a symlink to TARGET
+ *   tools/mapple-link.py run /private/var/root/mapple-dev/vln -r LINK       print where LINK points
  * e.g. the time zone: vln /var/db/timezone/zoneinfo/Europe/Rome /private/var/db/timezone/localtime
  */
 #include <errno.h>

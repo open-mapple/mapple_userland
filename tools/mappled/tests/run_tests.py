@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Build vivausbd for macOS and run the usbmux + PTP host emulators against it.
+"""Build mapple-usbd for macOS and run the usbmux + PTP host emulators against it.
 
-  python3 tools/vivad/tests/run_tests.py [--keep] [-v]
-  VIVAUSBD_SAN=thread python3 tools/vivad/tests/run_tests.py   (default: address,undefined)
+  python3 tools/mappled/tests/run_tests.py [--keep] [-v]
+  USBD_SAN=thread python3 tools/mappled/tests/run_tests.py   (default: address,undefined)
 
 Everything runs in a temporary directory: a fake Media storage (with symlinks that point
 out of it), a lockdownd stand-in (length-prefixed plist QueryType server) mapped to 62078,
@@ -85,10 +85,10 @@ def main():
     keep = '--keep' in sys.argv
     verbose = '-v' in sys.argv
     base = tempfile.mkdtemp(prefix='vusb')
-    binpath = os.path.join(base, 'vivausbd')
-    src = os.path.join(os.path.dirname(HERE), 'vivausbd.c')
+    binpath = os.path.join(base, 'mapple-usbd')
+    src = os.path.join(os.path.dirname(HERE), 'mapple-usbd.c')
     subprocess.check_call(['clang', '-O2', '-Wall', '-Wextra', '-Wno-unused-parameter', '-Werror',
-                           '-fsanitize=' + os.environ.get('VIVAUSBD_SAN', 'address,undefined'), '-g',
+                           '-fsanitize=' + os.environ.get('USBD_SAN', 'address,undefined'), '-g',
                            '-o', binpath, src])
     root = make_storage(base)
     sockdir = os.path.join(base, 's')

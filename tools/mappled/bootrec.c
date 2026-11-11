@@ -1,15 +1,15 @@
 /*
- * vbootrec: raw access to the VIVABOOT record (fork/shim/vivaboot.h, patch 0180) = the boot-args of the next boot in
- * the last MiB of userdata, through sysctl kern.viva_bootrec (the kernel reads/writes the 4 KiB block, checking that
+ * bootrec: raw access to the MAPPLEBR record (fork/shim/bootrec.h, patch 0180) = the boot-args of the next boot in
+ * the last MiB of userdata, through sysctl kern.mapple_bootrec (the kernel reads/writes the 4 KiB block, checking that
  * the HFS+ volume ends before it). Never the raw device: before 0180 a read of /dev/rufsroot0 panicked the kernel
  * (physio + PAN). VBOOTREC_DEV=FILE: an image file instead, for tests on the Mac. Built
- * next to vivad (tools/vivad/build.sh), pushed to /private/var/root/viva-tests/vbootrec, driven by
- * `tools/viva-link.py bootrec` (edit in vim/nano on the Mac):
- *   vbootrec text              the record as editable key=value text (stdout)
- *   vbootrec raw FILE          the whole 4 KiB block into FILE
- *   vbootrec put-text FILE     write the record from key=value text: line_hash recomputed, seq + 1,
- *                              base_hash=payload = hash of kern.viva_nextbootargs_orig (the boot partition's line)
- *   vbootrec put-raw FILE      write FILE (4096 bytes) as the block, unchanged
+ * next to mappled (tools/mappled/build.sh), pushed to /private/var/root/mapple-dev/bootrec, driven by
+ * `tools/mapple-link.py bootrec` (edit in vim/nano on the Mac):
+ *   bootrec text              the record as editable key=value text (stdout)
+ *   bootrec raw FILE          the whole 4 KiB block into FILE
+ *   bootrec put-text FILE     write the record from key=value text: line_hash recomputed, seq + 1,
+ *                              base_hash=payload = hash of kern.mapple_nextbootargs_orig (the boot partition's line)
+ *   bootrec put-raw FILE      write FILE (4096 bytes) as the block, unchanged
  * Writes refuse a block that the HFS+ volume reaches, are read back and compared.
  */
 #include <errno.h>
@@ -40,7 +40,7 @@ struct rec {
 	uint8_t reserved[24];
 	char cmdline[LINE];
 };
-_Static_assert(sizeof(struct rec) == 672, "VIVABOOT layout (shim/vivaboot.h)");
+_Static_assert(sizeof(struct rec) == 672, "MAPPLEBR layout (shim/bootrec.h)");
 
 static uint64_t fnv(const char *s)
 {
@@ -54,7 +54,7 @@ static uint64_t fnv(const char *s)
 
 static int fail(const char *what)
 {
-	printf("vbootrec: %s: %s\n", what, strerror(errno));
+	printf("bootrec: %s: %s\n", what, strerror(errno));
 	return 1;
 }
 
@@ -90,7 +90,7 @@ static int read_block(uint8_t *blk, off_t *off)
 	if (!getenv("VBOOTREC_DEV")) {
 		size_t len = BLOCK;
 		*off = 0;
-		if (sysctlbyname("kern.viva_bootrec", blk, &len, NULL, 0))
+		if (sysctlbyname("kern.mapple_bootrec", blk, &len, NULL, 0))
 			return -1;
 		return len == BLOCK ? 0 : -1;
 	}
@@ -113,7 +113,7 @@ static int volume_clear(int fd, off_t off)
 	uint64_t bs = (uint64_t)v[40] << 24 | v[41] << 16 | v[42] << 8 | v[43];
 	uint64_t tot = (uint64_t)v[44] << 24 | v[45] << 16 | v[46] << 8 | v[47];
 	if ((sig != 0x482b && sig != 0x4858) || !bs || bs * tot > (uint64_t)off) {
-		printf("vbootrec: the volume (0x%x, %llu bytes) reaches the record at 0x%llx\n", sig,
+		printf("bootrec: the volume (0x%x, %llu bytes) reaches the record at 0x%llx\n", sig,
 		    (unsigned long long)(bs * tot), (unsigned long long)off);
 		errno = ENOSPC;
 		return -1;
@@ -124,21 +124,21 @@ static int volume_clear(int fd, off_t off)
 static int write_block(const uint8_t *blk)
 {
 	if (!getenv("VBOOTREC_DEV")) {
-		if (sysctlbyname("kern.viva_bootrec", NULL, NULL, (void *)blk, BLOCK))
-			return fail("kern.viva_bootrec (write)");
+		if (sysctlbyname("kern.mapple_bootrec", NULL, NULL, (void *)blk, BLOCK))
+			return fail("kern.mapple_bootrec (write)");
 		uint8_t back[BLOCK];
 		off_t o;
 		if (read_block(back, &o) || memcmp(back, blk, BLOCK)) {
-			printf("vbootrec: read back differs\n");
+			printf("bootrec: read back differs\n");
 			return 1;
 		}
-		printf("vbootrec: written (kern.viva_bootrec)\n");
+		printf("bootrec: written (kern.mapple_bootrec)\n");
 		return 0;
 	}
 	off_t off;
 	int fd = open_dev(O_RDWR, &off);
 	if (fd < 0)
-		return fail(getenv("VBOOTREC_DEV") ? DEV : "kern.viva_bootrec");
+		return fail(getenv("VBOOTREC_DEV") ? DEV : "kern.mapple_bootrec");
 	if (volume_clear(fd, off)) {
 		close(fd);
 		return 1;
@@ -152,10 +152,10 @@ static int write_block(const uint8_t *blk)
 	ssize_t n = pread(fd, back, BLOCK, off);
 	close(fd);
 	if (n != BLOCK || memcmp(back, blk, BLOCK)) {
-		printf("vbootrec: read back differs\n");
+		printf("bootrec: read back differs\n");
 		return 1;
 	}
-	printf("vbootrec: written at byte 0x%llx of %s\n", (unsigned long long)off, getenv("VBOOTREC_DEV") ? getenv("VBOOTREC_DEV") : DEV);
+	printf("bootrec: written at byte 0x%llx of %s\n", (unsigned long long)off, getenv("VBOOTREC_DEV") ? getenv("VBOOTREC_DEV") : DEV);
 	return 0;
 }
 
@@ -164,30 +164,30 @@ static int cmd_text(void)
 	uint8_t blk[BLOCK];
 	off_t off;
 	if (read_block(blk, &off))
-		return fail("kern.viva_bootrec (kernel without patch 0180?)");
+		return fail("kern.mapple_bootrec (kernel without patch 0180?)");
 	struct rec r;
 	memcpy(&r, blk, sizeof(r));
 	char payload[LINE + 1] = "", src[128] = "";
 	size_t len = LINE;
-	if (sysctlbyname("kern.viva_nextbootargs_orig", payload, &len, NULL, 0))
+	if (sysctlbyname("kern.mapple_nextbootargs_orig", payload, &len, NULL, 0))
 		payload[0] = 0;
 	len = sizeof(src) - 1;
-	if (sysctlbyname("kern.viva_nextbootargs_src", src, &len, NULL, 0))
+	if (sysctlbyname("kern.mapple_nextbootargs_src", src, &len, NULL, 0))
 		strcpy(src, "?");
-	int magic = !memcmp(r.magic, "VIVABOOT", 8);
+	int magic = !memcmp(r.magic, "MAPPLEBR", 8);
 	char line[LINE + 1];
 	memcpy(line, r.cmdline, LINE);
 	line[LINE] = 0;
-	printf("# VIVABOOT record (last MiB of userdata, kern.viva_bootrec): %s\n", magic ? "present" : "empty (no magic)");
+	printf("# MAPPLEBR record (last MiB of userdata, kern.mapple_bootrec): %s\n", magic ? "present" : "empty (no magic)");
 	(void)off;
-	printf("# kern.viva_nextbootargs_src: %s\n", src);
-	printf("# boot partition line (kern.viva_nextbootargs_orig), hash %016llx:\n#   %s\n",
+	printf("# kern.mapple_nextbootargs_src: %s\n", src);
+	printf("# boot partition line (kern.mapple_nextbootargs_orig), hash %016llx:\n#   %s\n",
 	    (unsigned long long)fnv(payload), payload);
 	printf("# line_hash on disk %016llx, of the line below %016llx%s\n", (unsigned long long)r.line_hash,
 	    (unsigned long long)fnv(line), r.line_hash == fnv(line) ? "" : " (MISMATCH)");
 	printf("# Save to write. line_hash is recomputed, seq goes up by one. base_hash=payload = the line above;\n");
 	printf("# flags=0 (or an empty cmdline) disables the record. Lines starting with # are ignored.\n");
-	printf("magic=%.8s\n", magic ? r.magic : "VIVABOOT");
+	printf("magic=%.8s\n", magic ? r.magic : "MAPPLEBR");
 	printf("version=%u\n", magic ? r.version : 1);
 	printf("flags=%u\n", magic ? r.flags : 0);
 	printf("seq=%llu\n", (unsigned long long)(magic ? r.seq : 0));
@@ -204,12 +204,12 @@ static int cmd_raw(const char *path)
 	uint8_t blk[BLOCK];
 	off_t off;
 	if (read_block(blk, &off))
-		return fail(getenv("VBOOTREC_DEV") ? DEV : "kern.viva_bootrec");
+		return fail(getenv("VBOOTREC_DEV") ? DEV : "kern.mapple_bootrec");
 	FILE *f = fopen(path, "wb");
 	if (!f || fwrite(blk, 1, BLOCK, f) != BLOCK)
 		return fail(path);
 	fclose(f);
-	printf("vbootrec: block at byte 0x%llx -> %s\n", (unsigned long long)off, path);
+	printf("bootrec: block at byte 0x%llx -> %s\n", (unsigned long long)off, path);
 	return 0;
 }
 
@@ -222,7 +222,7 @@ static int cmd_put_raw(const char *path)
 	size_t n = fread(blk, 1, BLOCK, f);
 	fclose(f);
 	if (n != BLOCK) {
-		printf("vbootrec: %s: %zu bytes, need %d\n", path, n, BLOCK);
+		printf("bootrec: %s: %zu bytes, need %d\n", path, n, BLOCK);
 		return 1;
 	}
 	return write_block(blk);
@@ -236,11 +236,11 @@ static int cmd_put_text(const char *path)
 	uint8_t blk[BLOCK], old[BLOCK];
 	off_t off;
 	if (read_block(old, &off))
-		return fail(getenv("VBOOTREC_DEV") ? DEV : "kern.viva_bootrec");
+		return fail(getenv("VBOOTREC_DEV") ? DEV : "kern.mapple_bootrec");
 	struct rec r, prev;
 	memcpy(&prev, old, sizeof(prev));
 	memset(&r, 0, sizeof(r));
-	memcpy(r.magic, "VIVABOOT", 8);
+	memcpy(r.magic, "MAPPLEBR", 8);
 	r.version = 1;
 	int have_base = 0, base_payload = 1, have_seq = 0;
 	char buf[2048];
@@ -273,12 +273,12 @@ static int cmd_put_text(const char *path)
 			while (n && v[n - 1] == ' ')
 				n--;
 			if (n >= LINE) {
-				printf("vbootrec: cmdline of %zu bytes (max %d)\n", n, LINE - 1);
+				printf("bootrec: cmdline of %zu bytes (max %d)\n", n, LINE - 1);
 				return 1;
 			}
 			for (size_t i = 0; i < n; i++)
 				if (v[i] < 0x20 || v[i] > 0x7e) {
-					printf("vbootrec: cmdline: byte 0x%02x at %zu is not printable ASCII\n", (uint8_t)v[i], i);
+					printf("bootrec: cmdline: byte 0x%02x at %zu is not printable ASCII\n", (uint8_t)v[i], i);
 					return 1;
 				}
 			memcpy(r.cmdline, v, n);
@@ -288,13 +288,13 @@ static int cmd_put_text(const char *path)
 	if (!have_base || base_payload) {
 		char payload[LINE + 1] = "";
 		size_t len = LINE;
-		if (sysctlbyname("kern.viva_nextbootargs_orig", payload, &len, NULL, 0))
-			return fail("kern.viva_nextbootargs_orig (base_hash=payload)");
+		if (sysctlbyname("kern.mapple_nextbootargs_orig", payload, &len, NULL, 0))
+			return fail("kern.mapple_nextbootargs_orig (base_hash=payload)");
 		r.base_hash = fnv(payload);
 	}
 	if (!r.cmdline[0])
 		r.flags &= ~1u;
-	uint64_t prev_seq = !memcmp(prev.magic, "VIVABOOT", 8) ? prev.seq : 0;
+	uint64_t prev_seq = !memcmp(prev.magic, "MAPPLEBR", 8) ? prev.seq : 0;
 	if (!have_seq || r.seq == prev_seq)
 		r.seq = prev_seq + 1;
 	r.line_hash = fnv(r.cmdline);
@@ -313,6 +313,6 @@ int main(int argc, char **argv)
 		return cmd_put_raw(argv[2]);
 	if (argc == 3 && !strcmp(argv[1], "put-text"))
 		return cmd_put_text(argv[2]);
-	printf("usage: vbootrec text | raw FILE | put-text FILE | put-raw FILE\n");
+	printf("usage: bootrec text | raw FILE | put-text FILE | put-raw FILE\n");
 	return 2;
 }

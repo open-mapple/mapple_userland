@@ -1,27 +1,27 @@
 /*
- * vivad: runs programs on the phone for the viva USB link (bsd/dev/viva_usb.c).
+ * mappled: runs programs on the phone for the Mapple USB link (bsd/dev/usb_link.c).
  *
- * A root LaunchDaemon (tools/viva-launchd-add.py). It reads one command per
- * read() from /dev/vivalink, lines "ID TEXT" queued by the link commands
- * "run ARGS.." and "vivad TEXT", and writes everything it has to say back to
- * /dev/vivalink, which the host receives as 'O' frames
- * (tools/viva-link.py run ...). Commands:
+ * A root LaunchDaemon (tools/launchd-add.py). It reads one command per
+ * read() from /dev/mapplelink, lines "ID TEXT" queued by the link commands
+ * "run ARGS.." and "mappled TEXT", and writes everything it has to say back to
+ * /dev/mapplelink, which the host receives as 'O' frames
+ * (tools/mapple-link.py run ...). Commands:
  *
  *   run [VAR=VALUE..] PROGRAM [ARGS..]   start a program; stdout and stderr
  *       come back as "[ID] line", then "[ID] exit N" or "[ID] signal N".
- *       A PROGRAM without '/' is looked up in /private/var/root/viva-tests,
+ *       A PROGRAM without '/' is looked up in /private/var/root/mapple-dev,
  *       which is also the working directory. Double quotes group words.
  *   ps          running programs
  *   kill ID     SIGKILL a program started by "run"
- *   tests       list /private/var/root/viva-tests
+ *   tests       list /private/var/root/mapple-dev
  *
- * At start it runs every executable in /private/var/root/viva-tests/autorun
+ * At start it runs every executable in /private/var/root/mapple-dev/autorun
  * (name order, one after the other) the same way, with IDs a1, a2, ...
  * Without the link device (old kernel) the output goes to /dev/console.
  *
  * Low Power Mode bridge: powerd posts com.apple.system.lowpowermode with the
- * mode as the notification state; vivad copies it into sysctl
- * kern.viva_lowpower (iokit/Kernel/arm/VivaBattery.cpp: GPU ceiling, panel
+ * mode as the notification state; mappled copies it into sysctl
+ * kern.mapple_lowpower (iokit/Kernel/arm/BQ27Z561Battery.cpp: GPU ceiling, panel
  * copy duty), at start and on every change, link device or not.
  */
 #include <dirent.h>
@@ -41,8 +41,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define LINK_DEV    "/dev/vivalink"
-#define TESTS_DIR   "/private/var/root/viva-tests"
+#define LINK_DEV    "/dev/mapplelink"
+#define TESTS_DIR   "/private/var/root/mapple-dev"
 #define AUTORUN_DIR TESTS_DIR "/autorun"
 #define MAX_JOBS    16
 #define MAX_ARGS    64
@@ -298,7 +298,7 @@ command(char *line)
         /* diagnostic (2026-11-07): after SpringBoard hung, read() kept returning such lines in a tight loop */
         static unsigned odd;
         if (odd++ % 1000 == 0) {
-            say("vivad: odd input #%u (%zu bytes): \"%.60s\"\n", odd, strlen(line), line);
+            say("mappled: odd input #%u (%zu bytes): \"%.60s\"\n", odd, strlen(line), line);
         }
         return;
     }
@@ -328,7 +328,7 @@ command(char *line)
     } else if (strcmp(text, "tests") == 0) {
         list_dir(id, TESTS_DIR);
     } else {
-        say("[%s] unknown vivad command: %s (run, ps, kill ID, tests)\n[%s] exit 1\n", id, text, id);
+        say("[%s] unknown mappled command: %s (run, ps, kill ID, tests)\n[%s] exit 1\n", id, text, id);
     }
 }
 
@@ -342,11 +342,11 @@ lpm_apply(int token, const char *why)
     int on = state != 0, old = -1;
     size_t len = sizeof(old);
     if (st != NOTIFY_STATUS_OK) {
-        say("vivad: lpm: notify_get_state failed (%u)\n", st);
+        say("mappled: lpm: notify_get_state failed (%u)\n", st);
         return;
     }
-    int err = sysctlbyname("kern.viva_lowpower", &old, &len, &on, sizeof(on));
-    say("vivad: lpm (%s): powerd state %llu -> kern.viva_lowpower %d (was %d)%s\n", why,
+    int err = sysctlbyname("kern.mapple_lowpower", &old, &len, &on, sizeof(on));
+    say("mappled: lpm (%s): powerd state %llu -> kern.mapple_lowpower %d (was %d)%s\n", why,
         (unsigned long long)state, on, old, err ? " FAILED (old kernel?)" : "");
 }
 
@@ -359,7 +359,7 @@ lpm_bridge(void)
             lpm_apply(t, "change");
         });
     if (st != NOTIFY_STATUS_OK) {
-        say("vivad: lpm: notify_register_dispatch failed (%u)\n", st);
+        say("mappled: lpm: notify_register_dispatch failed (%u)\n", st);
         return;
     }
     lpm_apply(token, "start");
@@ -377,7 +377,7 @@ main(void)
     for (int tries = 0; (fd = open(LINK_DEV, O_RDWR)) < 0; tries++) {
         if (tries == 30) {      /* old kernel without the device: autorun to the console, then keep waiting */
             out_fd = open("/dev/console", O_WRONLY);
-            say("vivad: no %s, autorun output on the console\n", LINK_DEV);
+            say("mappled: no %s, autorun output on the console\n", LINK_DEV);
             autorun(NULL);
         }
         sleep(2);
@@ -386,7 +386,7 @@ main(void)
         close(out_fd);
     }
     out_fd = fd;
-    say("vivad: ready (pid %d), low power mode bridge on %s\n", getpid(), LPM_NOTIFY);
+    say("mappled: ready (pid %d), low power mode bridge on %s\n", getpid(), LPM_NOTIFY);
     pthread_t t;
     if (pthread_create(&t, NULL, autorun, NULL) == 0) {
         pthread_detach(t);
@@ -404,7 +404,7 @@ main(void)
                 sigset_t pend, mask;
                 sigpending(&pend);
                 pthread_sigmask(SIG_BLOCK, NULL, &mask);
-                say("vivad: read() interrupted %u times in a row: pending signals 0x%x, blocked 0x%x\n", eintr,
+                say("mappled: read() interrupted %u times in a row: pending signals 0x%x, blocked 0x%x\n", eintr,
                     (unsigned)pend, (unsigned)mask);
             }
             if (eintr > 100) {
@@ -425,7 +425,7 @@ main(void)
             static unsigned bad;
             struct stat st;
             if (bad++ % 1000 == 0 && fstat(fd, &st) == 0) {
-                say("vivad: fd %d mode 0%o rdev 0x%x read %zd bytes\n", fd, st.st_mode, st.st_rdev, n);
+                say("mappled: fd %d mode 0%o rdev 0x%x read %zd bytes\n", fd, st.st_mode, st.st_rdev, n);
             }
         }
         command(line);
