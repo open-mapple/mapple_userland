@@ -11,11 +11,13 @@
  *   mstat mkdir DIR      mkdir(2), mode 755
  *   mstat chown U G PATH chown(2), e.g. a pushed preference file back to mobile (501 501)
  *   mstat sysctl NAME..  each value read: an int, a string, or the length and an FNV-1a hash (to compare two names)
+ *   mstat kill PID [SIG] kill(2), SIGTERM by default (e.g. backboardd, so the UI starts again)
  */
 #include <dirent.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -336,9 +338,18 @@ main(int argc, char **argv)
 		printf("%s -> %s\n", argv[2], argv[3]);
 		return 0;
 	}
+	if (argc > 2 && strcmp(argv[1], "kill") == 0) {
+		int sig = argc > 3 ? atoi(argv[3]) : SIGTERM;
+		if (kill((pid_t)a, sig) != 0) {
+			perror("kill");
+			return 1;
+		}
+		printf("signal %d sent to %u\n", sig, a);
+		return 0;
+	}
 	if (argc > 2 && strcmp(argv[1], "sysctl") == 0) {
 		return cmd_sysctl(argc - 2, argv + 2);
 	}
-	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC | ls DIR | mv FROM TO | sync | mkdir DIR | chown U G PATH | sysctl NAME..\n");
+	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC | ls DIR | mv FROM TO | sync | mkdir DIR | chown U G PATH | sysctl NAME.. | kill PID [SIG]\n");
 	return 2;
 }
