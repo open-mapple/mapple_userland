@@ -14,6 +14,8 @@
  *   mstat kill PID [SIG] kill(2), SIGTERM by default (e.g. backboardd, so the UI starts again)
  *   mstat set NAME VALUE an int sysctl written (kern.mapple_gpu_bocache, kern.mapple_gpu_pressure, ...)
  *   mstat jetsam [NAME..] memorystatus priority band and memory limit (MB) of those processes (all without names)
+ *   mstat jetsam set PID BAND  that process on BAND, its memory limit left as it is (launchd's JetsamProperties of a
+ *                        job in the cache are not applied to ours: mappled is put above the UI this way)
  *   mstat pressure PID [warn|critical]  a memory pressure notification to one process (DEVELOPMENT kernels)
  *   mstat gpu            per process using the Metal driver: Mesa's BO cache and what pressure gave back
  *   mstat poster [reset NAME]  PosterBoard's data container and its Application Support; reset moves NAME aside
@@ -47,6 +49,7 @@ int proc_name(int pid, void *buffer, uint32_t buffersize);
 /* sys/kern_memorystatus.h, also not in the SDK */
 int memorystatus_control(uint32_t command, int32_t pid, uint32_t flags, void *buffer, size_t buffersize);
 #define MEMORYSTATUS_CMD_GET_PRIORITY_LIST 1
+#define MEMORYSTATUS_CMD_SET_PRIORITY_PROPERTIES 2
 typedef struct {
 	pid_t pid;
 	int32_t priority;
@@ -505,6 +508,15 @@ main(int argc, char **argv)
 		}
 		printf("%s = %d\n", argv[2], v);
 		return 0;
+	}
+	if (argc > 4 && strcmp(argv[1], "jetsam") == 0 && strcmp(argv[2], "set") == 0) {
+		struct { int32_t priority; uint64_t user_data; } props = { atoi(argv[4]), 0 };
+		int pid = atoi(argv[3]);
+		if (memorystatus_control(MEMORYSTATUS_CMD_SET_PRIORITY_PROPERTIES, pid, 0, &props, sizeof(props)) != 0) {
+			perror("memorystatus_control");
+			return 1;
+		}
+		return cmd_jetsam(0, NULL) == 0 ? 0 : 1;
 	}
 	if (argc > 1 && strcmp(argv[1], "jetsam") == 0) {
 		return cmd_jetsam(argc - 2, argv + 2);
