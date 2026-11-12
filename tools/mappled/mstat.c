@@ -19,11 +19,14 @@
  *   mstat pressure PID [warn|critical]  a memory pressure notification to one process (DEVELOPMENT kernels)
  *   mstat fill MB [SEC]  MB of memory written with a pattern from each word's address, read back after SEC seconds
  *                        (default 30): words that changed mean something else writes into the VM's pages
+ *   mstat surfaces       every live IOSurface (kern.mapple_surf_list, DEVELOPMENT kernels): size, maker, users; totals
+ *   mstat gpu objects    each Metal process writes its live buffers and textures to vmg-stats/<pid>.objects; the totals
  *   mstat gpu            per process using the Metal driver: Mesa's BO cache and what pressure gave back
  *   mstat poster [reset NAME]  PosterBoard's data container and its Application Support; reset moves NAME aside
  *                        (the lock screen falls back to a default poster when PosterBoard starts again)
  */
 #include <dirent.h>
+#include <notify.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
@@ -278,6 +281,61 @@ cmd_pressure(int pid, const char *level)
 
 /* The Metal driver's statistics pages (driver/vmg_shm_stats.h): version 4 ends with the BO cache's bytes, the pressure
  * notifications that emptied it and what they gave back. */
+static int
+cmd_surfaces(void)
+{
+	size_t len = 0;
+	if (sysctlbyname("kern.mapple_surf_list", NULL, &len, NULL, 0) != 0) {
+		perror("kern.mapple_surf_list");
+		return 1;
+	}
+	char *buf = malloc(len + 1);
+	if (buf == NULL || sysctlbyname("kern.mapple_surf_list", buf, &len, NULL, 0) != 0) {
+		perror("kern.mapple_surf_list");
+		return 1;
+	}
+	buf[len] = 0;
+	fputs(buf, stdout);
+	free(buf);
+	return 0;
+}
+
+static int
+cmd_gpu_objects(void)
+{
+	const char *dir = "/private/var/tmp/vmg-stats";
+	notify_post("com.mapple.gpu.objects");
+	sleep(2);
+	DIR *d = opendir(dir);
+	if (d == NULL) {
+		perror(dir);
+		return 1;
+	}
+	struct dirent *de;
+	while ((de = readdir(d)) != NULL) {
+		char path[512], line[512], name[64] = "?";
+		size_t len = strlen(de->d_name);
+		if (len < 9 || strcmp(de->d_name + len - 8, ".objects") != 0) {
+			continue;
+		}
+		snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
+		FILE *f = fopen(path, "r");
+		if (f == NULL) {
+			continue;
+		}
+		proc_name(atoi(de->d_name), name, sizeof(name));
+		printf("%s[%d] (%s):\n", name, atoi(de->d_name), path);
+		while (fgets(line, sizeof(line), f)) {
+			if (strncmp(line, "total ", 6) == 0) {
+				printf("  %s", line);
+			}
+		}
+		fclose(f);
+	}
+	closedir(d);
+	return 0;
+}
+
 static int
 cmd_gpu(void)
 {
@@ -563,6 +621,12 @@ main(int argc, char **argv)
 	if (argc > 2 && strcmp(argv[1], "fill") == 0 && a > 0) {
 		return cmd_fill(a, argc > 3 ? b : 30);
 	}
+	if (argc > 1 && strcmp(argv[1], "surfaces") == 0) {
+		return cmd_surfaces();
+	}
+	if (argc > 2 && strcmp(argv[1], "gpu") == 0 && strcmp(argv[2], "objects") == 0) {
+		return cmd_gpu_objects();
+	}
 	if (argc > 1 && strcmp(argv[1], "gpu") == 0) {
 		return cmd_gpu();
 	}
@@ -573,6 +637,6 @@ main(int argc, char **argv)
 		return cmd_sysctl(argc - 2, argv + 2);
 	}
 	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC | ls DIR | mv FROM TO | sync | mkdir DIR | chown U G PATH | sysctl NAME.. | kill PID [SIG] |\n"
-	    "       set NAME VALUE | jetsam [NAME..] | pressure PID [warn|critical] | gpu | poster [reset NAME] | fill MB [SEC]\n");
+	    "       set NAME VALUE | jetsam [NAME..] | pressure PID [warn|critical] | gpu [objects] | surfaces | poster [reset NAME] | fill MB [SEC]\n");
 	return 2;
 }
