@@ -12,6 +12,11 @@
  *   mstat chown U G PATH chown(2), e.g. a pushed preference file back to mobile (501 501)
  *   mstat sysctl NAME..  each value read: an int, a string, or the length and an FNV-1a hash (to compare two names)
  *   mstat kill PID [SIG] kill(2), SIGTERM by default (e.g. backboardd, so the UI starts again)
+ *   mstat jetsam [NAME..] memorystatus priority band and memory limit (MB) of those processes (all without names)
+ *   mstat pressure PID [warn|critical]  a memory pressure notification to one process (DEVELOPMENT kernels)
+ *   mstat gpu            per process using the Metal driver: Mesa's BO cache and what pressure gave back
+ *   mstat poster [reset NAME]  PosterBoard's data container and its Application Support; reset moves NAME aside
+ *                        (the lock screen falls back to a default poster when PosterBoard starts again)
  */
 #include <dirent.h>
 #include <mach/mach.h>
@@ -38,6 +43,16 @@ struct proc_taskinfo {
 int proc_listallpids(void *buffer, int buffersize);
 int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize);
 int proc_name(int pid, void *buffer, uint32_t buffersize);
+/* sys/kern_memorystatus.h, also not in the SDK */
+int memorystatus_control(uint32_t command, int32_t pid, uint32_t flags, void *buffer, size_t buffersize);
+#define MEMORYSTATUS_CMD_GET_PRIORITY_LIST 1
+typedef struct {
+	pid_t pid;
+	int32_t priority;
+	uint64_t user_data;
+	int32_t limit;          /* MB */
+	uint32_t state;
+} memorystatus_priority_entry_t;
 
 #define NCPU_MAX 16
 #define NPROC_MAX 1024
@@ -213,6 +228,140 @@ cmd_sysctl(int n, char **names)
 }
 
 static int
+cmd_jetsam(int n, char **names)
+{
+	int size = memorystatus_control(MEMORYSTATUS_CMD_GET_PRIORITY_LIST, 0, 0, NULL, 0);
+	if (size <= 0) {
+		perror("memorystatus_control");
+		return 1;
+	}
+	memorystatus_priority_entry_t *e = malloc((size_t)size + 4096);
+	size = memorystatus_control(MEMORYSTATUS_CMD_GET_PRIORITY_LIST, 0, 0, e, (size_t)size + 4096);
+	if (size <= 0) {
+		perror("memorystatus_control");
+		return 1;
+	}
+	for (int i = 0; i < size / (int)sizeof(*e); i++) {
+		char name[64] = "";
+		proc_name(e[i].pid, name, sizeof(name));
+		int want = n == 0;
+		for (int k = 0; k < n; k++) {
+			want |= strcmp(name, names[k]) == 0;
+		}
+		if (want) {
+			printf("%6d %-28s band %3d, limit %d MB\n", e[i].pid, name, e[i].priority, e[i].limit);
+		}
+	}
+	free(e);
+	return 0;
+}
+
+static int
+cmd_pressure(int pid, const char *level)
+{
+	uint64_t flags = level != NULL && strcmp(level, "critical") == 0 ? 0x4 : 0x2;   /* NOTE_MEMORYSTATUS_PRESSURE_* */
+	uint64_t v = (flags << 32) | (uint32_t)pid;
+	if (sysctlbyname("kern.memorystatus_vm_pressure_send", NULL, NULL, &v, sizeof(v)) != 0) {
+		perror("kern.memorystatus_vm_pressure_send");
+		return 1;
+	}
+	printf("pressure %s sent to %d\n", flags == 0x4 ? "critical" : "warn", pid);
+	return 0;
+}
+
+/* The Metal driver's statistics pages (driver/vmg_shm_stats.h): version 4 ends with the BO cache's bytes, the pressure
+ * notifications that emptied it and what they gave back. */
+static int
+cmd_gpu(void)
+{
+	const char *dir = "/private/var/tmp/vmg-stats";
+	DIR *d = opendir(dir);
+	if (d == NULL) {
+		perror(dir);
+		return 1;
+	}
+	struct dirent *de;
+	while ((de = readdir(d)) != NULL) {
+		char path[512];
+		uint32_t head[4];
+		snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
+		FILE *f = fopen(path, "r");
+		if (f == NULL) {
+			continue;
+		}
+		uint64_t tail[3] = { 0, 0, 0 };
+		if (fread(head, sizeof(head), 1, f) == 1 && head[0] == 0x534d4756u && head[1] >= 4 && head[2] >= 40 &&
+		    fseek(f, (long)head[2] - (long)sizeof(tail), SEEK_SET) == 0 && fread(tail, sizeof(tail), 1, f) == 1) {
+			char name[64] = "?";
+			proc_name((int)head[3], name, sizeof(name));
+			if (kill((pid_t)head[3], 0) == 0) {
+				printf("%6u %-28s BO cache %llu KiB, %llu pressure notifications gave back %llu KiB\n", head[3], name,
+				    tail[0] >> 10, tail[1], tail[2] >> 10);
+			}
+		}
+		fclose(f);
+	}
+	closedir(d);
+	return 0;
+}
+
+static int cmd_ls(const char *dir);
+
+/* PosterBoard's data container: the one whose metadata names com.apple.PosterBoard. */
+static int
+poster_container(char *out, size_t len)
+{
+	const char *base = "/private/var/mobile/Containers/Data/Application";
+	DIR *d = opendir(base);
+	if (d == NULL) {
+		perror(base);
+		return 0;
+	}
+	struct dirent *de;
+	int found = 0;
+	while (!found && (de = readdir(d)) != NULL) {
+		char meta[512], buf[4096];
+		snprintf(meta, sizeof(meta), "%s/%s/.com.apple.mobile_container_manager.metadata.plist", base, de->d_name);
+		FILE *f = fopen(meta, "r");
+		if (f == NULL) {
+			continue;
+		}
+		size_t n = fread(buf, 1, sizeof(buf), f);
+		fclose(f);
+		if (memmem(buf, n, "com.apple.PosterBoard", 21) != NULL) {
+			snprintf(out, len, "%s/%s", base, de->d_name);
+			found = 1;
+		}
+	}
+	closedir(d);
+	return found;
+}
+
+static int
+cmd_poster(const char *reset)
+{
+	char c[512], dir[700], from[900], to[960];
+	if (!poster_container(c, sizeof(c))) {
+		printf("no PosterBoard data container\n");
+		return 1;
+	}
+	snprintf(dir, sizeof(dir), "%s/Library/Application Support", c);
+	printf("PosterBoard: %s\n", c);
+	if (reset == NULL) {
+		return cmd_ls(dir);
+	}
+	snprintf(from, sizeof(from), "%s/%s", dir, reset);
+	snprintf(to, sizeof(to), "%s.mapple-saved-%ld", from, (long)time(NULL));
+	if (rename(from, to) != 0) {
+		perror(from);
+		return 1;
+	}
+	sync();
+	printf("%s -> %s (synced; kill PosterBoard for a default lock screen)\n", from, to);
+	return 0;
+}
+
+static int
 cmd_mem(void)
 {
 	vm_statistics64_data_t vs;
@@ -347,9 +496,22 @@ main(int argc, char **argv)
 		printf("signal %d sent to %u\n", sig, a);
 		return 0;
 	}
+	if (argc > 1 && strcmp(argv[1], "jetsam") == 0) {
+		return cmd_jetsam(argc - 2, argv + 2);
+	}
+	if (argc > 2 && strcmp(argv[1], "pressure") == 0) {
+		return cmd_pressure((int)a, argc > 3 ? argv[3] : NULL);
+	}
+	if (argc > 1 && strcmp(argv[1], "gpu") == 0) {
+		return cmd_gpu();
+	}
+	if (argc > 1 && strcmp(argv[1], "poster") == 0) {
+		return cmd_poster(argc > 3 && strcmp(argv[2], "reset") == 0 ? argv[3] : NULL);
+	}
 	if (argc > 2 && strcmp(argv[1], "sysctl") == 0) {
 		return cmd_sysctl(argc - 2, argv + 2);
 	}
-	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC | ls DIR | mv FROM TO | sync | mkdir DIR | chown U G PATH | sysctl NAME.. | kill PID [SIG]\n");
+	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC | ls DIR | mv FROM TO | sync | mkdir DIR | chown U G PATH | sysctl NAME.. | kill PID [SIG] |\n"
+	    "       jetsam [NAME..] | pressure PID [warn|critical] | gpu | poster [reset NAME]\n");
 	return 2;
 }
