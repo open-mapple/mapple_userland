@@ -12,6 +12,7 @@
  *   mstat chown U G PATH chown(2), e.g. a pushed preference file back to mobile (501 501)
  *   mstat sysctl NAME..  each value read: an int, a string, or the length and an FNV-1a hash (to compare two names)
  *   mstat kill PID [SIG] kill(2), SIGTERM by default (e.g. backboardd, so the UI starts again)
+ *   mstat set NAME VALUE an int sysctl written (kern.mapple_gpu_bocache, kern.mapple_gpu_pressure, ...)
  *   mstat jetsam [NAME..] memorystatus priority band and memory limit (MB) of those processes (all without names)
  *   mstat pressure PID [warn|critical]  a memory pressure notification to one process (DEVELOPMENT kernels)
  *   mstat gpu            per process using the Metal driver: Mesa's BO cache and what pressure gave back
@@ -496,6 +497,15 @@ main(int argc, char **argv)
 		printf("signal %d sent to %u\n", sig, a);
 		return 0;
 	}
+	if (argc > 3 && strcmp(argv[1], "set") == 0) {
+		int v = atoi(argv[3]);
+		if (sysctlbyname(argv[2], NULL, NULL, &v, sizeof(v)) != 0) {
+			perror(argv[2]);
+			return 1;
+		}
+		printf("%s = %d\n", argv[2], v);
+		return 0;
+	}
 	if (argc > 1 && strcmp(argv[1], "jetsam") == 0) {
 		return cmd_jetsam(argc - 2, argv + 2);
 	}
@@ -512,6 +522,6 @@ main(int argc, char **argv)
 		return cmd_sysctl(argc - 2, argv + 2);
 	}
 	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC | ls DIR | mv FROM TO | sync | mkdir DIR | chown U G PATH | sysctl NAME.. | kill PID [SIG] |\n"
-	    "       jetsam [NAME..] | pressure PID [warn|critical] | gpu | poster [reset NAME]\n");
+	    "       set NAME VALUE | jetsam [NAME..] | pressure PID [warn|critical] | gpu | poster [reset NAME]\n");
 	return 2;
 }
