@@ -48,6 +48,8 @@ file "$OUT"
 build "$DIR/vln" "$HERE/vln.c"
 # bootrec (raw MAPPLEBR record, tools/mapple-link.py bootrec), next to mappled
 build "$DIR/bootrec" "$HERE/bootrec.c"
+# mstat (load, processes, memory: tools/mappled/mstat.c), next to mappled
+build "$DIR/mstat" "$HERE/mstat.c"
 # mapple-usbd (PTP + usbmux of the std USB persona, docs/VIVA-USB-PERSONA.md), next to mappled
 build "$DIR/mapple-usbd" "$HERE/mapple-usbd.c"
 file "$DIR/mapple-usbd"
