@@ -17,6 +17,8 @@
  *   mstat jetsam set PID BAND  that process on BAND, its memory limit left as it is (launchd's JetsamProperties of a
  *                        job in the cache are not applied to ours: mappled is put above the UI this way)
  *   mstat pressure PID [warn|critical]  a memory pressure notification to one process (DEVELOPMENT kernels)
+ *   mstat fill MB [SEC]  MB of memory written with a pattern from each word's address, read back after SEC seconds
+ *                        (default 30): words that changed mean something else writes into the VM's pages
  *   mstat gpu            per process using the Metal driver: Mesa's BO cache and what pressure gave back
  *   mstat poster [reset NAME]  PosterBoard's data container and its Application Support; reset moves NAME aside
  *                        (the lock screen falls back to a default poster when PosterBoard starts again)
@@ -29,6 +31,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/mman.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
@@ -443,6 +446,39 @@ cmd_ls(const char *dir)
 	return 0;
 }
 
+static int
+cmd_fill(unsigned mb, unsigned secs)
+{
+	const size_t chunk = 64u << 20;
+	unsigned n = (mb + 63) / 64, got = 0;
+	uint64_t **c = calloc(n, sizeof(*c)), bad = 0;
+
+	for (; got < n; got++) {
+		c[got] = mmap(NULL, chunk, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+		if (c[got] == MAP_FAILED) {
+			break;
+		}
+		for (size_t w = 0; w < chunk / 8; w++) {
+			uint64_t x = (uint64_t)&c[got][w] * 0x9e3779b97f4a7c15ull;
+			c[got][w] = x ^ (x >> 29);
+		}
+	}
+	printf("fill: %u MB written; reading back in %u s\n", got * 64, secs);
+	fflush(stdout);
+	sleep(secs);
+	for (unsigned i = 0; i < got; i++) {
+		for (size_t w = 0; w < chunk / 8; w++) {
+			uint64_t x = (uint64_t)&c[i][w] * 0x9e3779b97f4a7c15ull;
+			if (c[i][w] != (x ^ (x >> 29)) && bad++ < 8) {
+				printf("fill: %p is %016llx\n", (void *)&c[i][w], (unsigned long long)c[i][w]);
+			}
+		}
+		munmap(c[i], chunk);
+	}
+	printf("fill: %u MB read back, %llu words changed\n", got * 64, (unsigned long long)bad);
+	return bad != 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -524,6 +560,9 @@ main(int argc, char **argv)
 	if (argc > 2 && strcmp(argv[1], "pressure") == 0) {
 		return cmd_pressure((int)a, argc > 3 ? argv[3] : NULL);
 	}
+	if (argc > 2 && strcmp(argv[1], "fill") == 0 && a > 0) {
+		return cmd_fill(a, argc > 3 ? b : 30);
+	}
 	if (argc > 1 && strcmp(argv[1], "gpu") == 0) {
 		return cmd_gpu();
 	}
@@ -534,6 +573,6 @@ main(int argc, char **argv)
 		return cmd_sysctl(argc - 2, argv + 2);
 	}
 	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC | ls DIR | mv FROM TO | sync | mkdir DIR | chown U G PATH | sysctl NAME.. | kill PID [SIG] |\n"
-	    "       set NAME VALUE | jetsam [NAME..] | pressure PID [warn|critical] | gpu | poster [reset NAME]\n");
+	    "       set NAME VALUE | jetsam [NAME..] | pressure PID [warn|critical] | gpu | poster [reset NAME] | fill MB [SEC]\n");
 	return 2;
 }
