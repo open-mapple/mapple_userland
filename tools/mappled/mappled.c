@@ -170,7 +170,7 @@ run(const char *id, char *cmdline, int wait)
     }
     envp[envc] = NULL;
     if (first == n) {
-        say("[%s] nothing to run\n", id);
+        say("[%s] nothing to run\n[%s] exit 1\n", id, id);
         return;
     }
     if (strchr(words[first], '/')) {
@@ -190,12 +190,12 @@ run(const char *id, char *cmdline, int wait)
     }
     pthread_mutex_unlock(&jobs_lock);
     if (j == NULL) {
-        say("[%s] too many programs running (%d)\n", id, MAX_JOBS);
+        say("[%s] too many programs running (%d)\n[%s] exit 1\n", id, MAX_JOBS, id);
         return;
     }
     int fds[2];
     if (pipe(fds) < 0) {
-        say("[%s] pipe: %s\n", id, strerror(errno));
+        say("[%s] pipe: %s\n[%s] exit 1\n", id, strerror(errno), id);
         j->pid = 0;
         return;
     }
@@ -215,7 +215,7 @@ run(const char *id, char *cmdline, int wait)
     close(fds[1]);
     if (err) {
         close(fds[0]);
-        say("[%s] cannot start %s: %s\n", id, path, strerror(err));
+        say("[%s] cannot start %s: %s\n[%s] exit 127\n", id, path, strerror(err), id);
         j->pid = 0;
         return;
     }
@@ -250,7 +250,7 @@ list_dir(const char *id, const char *dir)
     struct dirent **names;
     int n = scandir(dir, &names, NULL, by_name);
     if (n < 0) {
-        say("[%s] %s: %s\n", id, dir, strerror(errno));
+        say("[%s] %s: %s\n[%s] exit 1\n", id, dir, strerror(errno), id);
         return;
     }
     for (int i = 0; i < n; i++) {
