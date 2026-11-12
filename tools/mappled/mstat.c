@@ -5,7 +5,11 @@
  *   mstat top MS [N]     the N busiest processes over MS ms (% of one CPU, threads), processes started and gone
  *   mstat mem            free / active / inactive / wired / compressed memory, compressor activity, pressure
  *   mstat burn SEC       eight threads spinning for SEC seconds (a load for the thermal trip test)
+ *   mstat ls DIR         names, sizes and change times in DIR (the phone has no ls; to find files to pull)
+ *   mstat mv FROM TO     rename(2), e.g. a bundle moved aside back into place (the phone has no mv)
+ *   mstat sync           sync(2): before the link's reboot, which resets at once
  */
+#include <dirent.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
@@ -13,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <time.h>
 #include <unistd.h>
@@ -225,6 +230,27 @@ cmd_burn(unsigned sec)
 	return 0;
 }
 
+static int
+cmd_ls(const char *dir)
+{
+	DIR *d = opendir(dir);
+	if (d == NULL) {
+		perror(dir);
+		return 1;
+	}
+	struct dirent *e;
+	while ((e = readdir(d)) != NULL) {
+		char path[1024];
+		struct stat st;
+		snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
+		if (e->d_name[0] != '.' && lstat(path, &st) == 0) {
+			printf("%10lld %10ld %s%s\n", (long long)st.st_size, (long)st.st_ctime, e->d_name, S_ISDIR(st.st_mode) ? "/" : "");
+		}
+	}
+	closedir(d);
+	return 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -241,6 +267,22 @@ main(int argc, char **argv)
 	if (argc > 1 && strcmp(argv[1], "burn") == 0 && a > 0) {
 		return cmd_burn(a > 600 ? 600 : a);
 	}
-	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC\n");
+	if (argc > 2 && strcmp(argv[1], "ls") == 0) {
+		return cmd_ls(argv[2]);
+	}
+	if (argc > 1 && strcmp(argv[1], "sync") == 0) {
+		sync();
+		printf("synced\n");
+		return 0;
+	}
+	if (argc > 3 && strcmp(argv[1], "mv") == 0) {
+		if (rename(argv[2], argv[3]) != 0) {
+			perror("rename");
+			return 1;
+		}
+		printf("%s -> %s\n", argv[2], argv[3]);
+		return 0;
+	}
+	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC | ls DIR | mv FROM TO | sync\n");
 	return 2;
 }
