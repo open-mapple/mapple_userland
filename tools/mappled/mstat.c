@@ -10,6 +10,7 @@
  *   mstat sync           sync(2): before the link's reboot, which resets at once
  *   mstat mkdir DIR      mkdir(2), mode 755
  *   mstat chown U G PATH chown(2), e.g. a pushed preference file back to mobile (501 501)
+ *   mstat sysctl NAME..  each value read: an int, a string, or the length and an FNV-1a hash (to compare two names)
  */
 #include <dirent.h>
 #include <mach/mach.h>
@@ -176,6 +177,40 @@ sysctl_int(const char *name)
 }
 
 static int
+cmd_sysctl(int n, char **names)
+{
+	static unsigned char buf[16384];
+	int bad = 0;
+	for (int i = 0; i < n; i++) {
+		size_t len = sizeof(buf) - 1;
+		if (sysctlbyname(names[i], buf, &len, NULL, 0) != 0) {
+			printf("%s: ", names[i]);
+			fflush(stdout);
+			perror(NULL);
+			bad = 1;
+			continue;
+		}
+		size_t text = 0;
+		while (text < len && buf[text] >= 0x20 && buf[text] < 0x7f) {
+			text++;
+		}
+		if (len == sizeof(int)) {
+			printf("%s: %d\n", names[i], *(int *)buf);
+		} else if (len > 0 && (text == len || (text == len - 1 && buf[text] == 0))) {
+			buf[len] = 0;
+			printf("%s: \"%s\"\n", names[i], (char *)buf);
+		} else {
+			uint32_t h = 2166136261u;
+			for (size_t j = 0; j < len; j++) {
+				h = (h ^ buf[j]) * 16777619u;
+			}
+			printf("%s: %zu bytes, fnv %08x\n", names[i], len, h);
+		}
+	}
+	return bad;
+}
+
+static int
 cmd_mem(void)
 {
 	vm_statistics64_data_t vs;
@@ -301,6 +336,9 @@ main(int argc, char **argv)
 		printf("%s -> %s\n", argv[2], argv[3]);
 		return 0;
 	}
-	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC | ls DIR | mv FROM TO | sync | mkdir DIR | chown U G PATH\n");
+	if (argc > 2 && strcmp(argv[1], "sysctl") == 0) {
+		return cmd_sysctl(argc - 2, argv + 2);
+	}
+	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC | ls DIR | mv FROM TO | sync | mkdir DIR | chown U G PATH | sysctl NAME..\n");
 	return 2;
 }
