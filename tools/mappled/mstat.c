@@ -19,6 +19,8 @@
  *   mstat pressure PID [warn|critical]  a memory pressure notification to one process (DEVELOPMENT kernels)
  *   mstat fill MB [SEC]  MB of memory written with a pattern from each word's address, read back after SEC seconds
  *                        (default 30): words that changed mean something else writes into the VM's pages
+ *   mstat gpu memory     the GPU driver's memory lines (kern.mapple_gpu_memory): per process GPU memory, imports, and
+ *                        the pages prepared (wired) and completed for the GPU: user memory and IOSurfaces
  *   mstat surfaces       every live IOSurface (kern.mapple_surf_list, DEVELOPMENT kernels): size, maker, users; totals
  *   mstat gpu objects    each Metal process writes its live buffers and textures to vmg-stats/<pid>.objects; the totals
  *   mstat gpu            per process using the Metal driver: Mesa's BO cache and what pressure gave back
@@ -282,16 +284,16 @@ cmd_pressure(int pid, const char *level)
 /* The Metal driver's statistics pages (driver/vmg_shm_stats.h): version 4 ends with the BO cache's bytes, the pressure
  * notifications that emptied it and what they gave back. */
 static int
-cmd_surfaces(void)
+cmd_text_sysctl(const char *name)
 {
 	size_t len = 0;
-	if (sysctlbyname("kern.mapple_surf_list", NULL, &len, NULL, 0) != 0) {
-		perror("kern.mapple_surf_list");
+	if (sysctlbyname(name, NULL, &len, NULL, 0) != 0) {
+		perror(name);
 		return 1;
 	}
 	char *buf = malloc(len + 1);
-	if (buf == NULL || sysctlbyname("kern.mapple_surf_list", buf, &len, NULL, 0) != 0) {
-		perror("kern.mapple_surf_list");
+	if (buf == NULL || sysctlbyname(name, buf, &len, NULL, 0) != 0) {
+		perror(name);
 		return 1;
 	}
 	buf[len] = 0;
@@ -622,7 +624,10 @@ main(int argc, char **argv)
 		return cmd_fill(a, argc > 3 ? b : 30);
 	}
 	if (argc > 1 && strcmp(argv[1], "surfaces") == 0) {
-		return cmd_surfaces();
+		return cmd_text_sysctl("kern.mapple_surf_list");
+	}
+	if (argc > 2 && strcmp(argv[1], "gpu") == 0 && strcmp(argv[2], "memory") == 0) {
+		return cmd_text_sysctl("kern.mapple_gpu_memory");
 	}
 	if (argc > 2 && strcmp(argv[1], "gpu") == 0 && strcmp(argv[2], "objects") == 0) {
 		return cmd_gpu_objects();
@@ -637,6 +642,6 @@ main(int argc, char **argv)
 		return cmd_sysctl(argc - 2, argv + 2);
 	}
 	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC | ls DIR | mv FROM TO | sync | mkdir DIR | chown U G PATH | sysctl NAME.. | kill PID [SIG] |\n"
-	    "       set NAME VALUE | jetsam [NAME..] | pressure PID [warn|critical] | gpu [objects] | surfaces | poster [reset NAME] | fill MB [SEC]\n");
+	    "       set NAME VALUE | jetsam [NAME..] | pressure PID [warn|critical] | gpu [objects|memory] | surfaces | poster [reset NAME] | fill MB [SEC]\n");
 	return 2;
 }
