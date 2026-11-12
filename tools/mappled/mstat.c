@@ -8,6 +8,8 @@
  *   mstat ls DIR         names, sizes and change times in DIR (the phone has no ls; to find files to pull)
  *   mstat mv FROM TO     rename(2), e.g. a bundle moved aside back into place (the phone has no mv)
  *   mstat sync           sync(2): before the link's reboot, which resets at once
+ *   mstat mkdir DIR      mkdir(2), mode 755
+ *   mstat chown U G PATH chown(2), e.g. a pushed preference file back to mobile (501 501)
  */
 #include <dirent.h>
 #include <mach/mach.h>
@@ -270,6 +272,22 @@ main(int argc, char **argv)
 	if (argc > 2 && strcmp(argv[1], "ls") == 0) {
 		return cmd_ls(argv[2]);
 	}
+	if (argc > 2 && strcmp(argv[1], "mkdir") == 0) {
+		if (mkdir(argv[2], 0755) != 0) {
+			perror("mkdir");
+			return 1;
+		}
+		printf("%s made\n", argv[2]);
+		return 0;
+	}
+	if (argc > 4 && strcmp(argv[1], "chown") == 0) {
+		if (chown(argv[4], (uid_t)strtoul(argv[2], NULL, 10), (gid_t)strtoul(argv[3], NULL, 10)) != 0) {
+			perror("chown");
+			return 1;
+		}
+		printf("%s owned by %s:%s\n", argv[4], argv[2], argv[3]);
+		return 0;
+	}
 	if (argc > 1 && strcmp(argv[1], "sync") == 0) {
 		sync();
 		printf("synced\n");
@@ -283,6 +301,6 @@ main(int argc, char **argv)
 		printf("%s -> %s\n", argv[2], argv[3]);
 		return 0;
 	}
-	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC | ls DIR | mv FROM TO | sync\n");
+	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC | ls DIR | mv FROM TO | sync | mkdir DIR | chown U G PATH\n");
 	return 2;
 }
