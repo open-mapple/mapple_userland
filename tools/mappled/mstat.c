@@ -21,6 +21,8 @@
  *                        (default 30): words that changed mean something else writes into the VM's pages
  *   mstat gpu memory     the GPU driver's memory lines (kern.mapple_gpu_memory): per process GPU memory, imports, and
  *                        the pages prepared (wired) and completed for the GPU: user memory and IOSurfaces
+ *   mstat kmem [KIB]     the kernel's memory by zone and by allocation site (mach_memory_info, as zprint): each line
+ *                        of at least KIB KiB (default 256), largest first; two of them diffed on the Mac
  *   mstat surfaces       every live IOSurface (kern.mapple_surf_list, DEVELOPMENT kernels): size, maker, users; totals
  *   mstat gpu objects    each Metal process writes its live buffers and textures to vmg-stats/<pid>.objects; the totals
  *   mstat gpu            per process using the Metal driver: Mesa's BO cache and what pressure gave back
@@ -31,6 +33,7 @@
 #include <notify.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#include <mach_debug/mach_debug.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
@@ -506,6 +509,93 @@ cmd_ls(const char *dir)
 	return 0;
 }
 
+/* osfmk/mach/vm_statistics.h (kernel private) */
+#define SITE_TYPE       0xff
+#define SITE_WIRED      0x100
+#define SITE_NAMED      0x400
+#define SITE_ZONE       0x800
+static const char *const kern_tags[] = {
+	"none", "osfmk", "bsd", "iokit", "libkern", "oskext", "kext", "ipc", "stack", "cpu", "pmap", "pte", "zone", "kalloc",
+	"compressor", "compressed_data", "phantom_cache", "waitq", "diag", "log", "file", "mbuf", "ubc", "security", "mlock",
+	"reason", "skywalk", "ltable", "hv", "kalloc_data", "retired", "kalloc_type", "triage", "recount",
+};
+static const char *const kern_counts[] = {
+	"managed", "reserved", "wired", "wired_managed", "stolen", "lopage", "map_kernel", "map_zone", "map_kalloc",
+	"wired_boot", "boot_stolen", "wired_static_kernelcache", "map_kalloc_large_data", "map_kernel_data",
+};
+
+struct kmem_line { uint64_t kib; char text[160]; };
+
+static int
+kmem_cmp(const void *a, const void *b)
+{
+	const struct kmem_line *x = a, *y = b;
+	return x->kib < y->kib ? 1 : x->kib > y->kib ? -1 : 0;
+}
+
+static int
+cmd_kmem(unsigned min_kib)
+{
+	mach_port_t priv = MACH_PORT_NULL;
+	mach_zone_name_t *names = NULL;
+	mach_zone_info_t *zones = NULL;
+	mach_memory_info_t *sites = NULL;
+	mach_msg_type_number_t nn = 0, nz = 0, ns = 0;
+	kern_return_t kr = host_get_host_priv_port(mach_host_self(), &priv);
+	if (kr == KERN_SUCCESS) {
+		kr = mach_memory_info(priv, &names, &nn, &zones, &nz, &sites, &ns);
+	}
+	if (kr != KERN_SUCCESS) {
+		printf("kmem: mach_memory_info: %s (root needed)\n", mach_error_string(kr));
+		return 1;
+	}
+	struct kmem_line *l = calloc(nz + ns, sizeof(*l));
+	unsigned n = 0;
+	for (unsigned i = 0; i < nz && i < nn; i++) {
+		uint64_t kib = zones[i].mzi_cur_size >> 10;
+		if (kib >= min_kib) {
+			l[n].kib = kib;
+			snprintf(l[n++].text, sizeof(l[0].text), "zone %s: %llu elements of %llu, %llu KiB free", names[i].mzn_name,
+			    (unsigned long long)zones[i].mzi_count, (unsigned long long)zones[i].mzi_elem_size,
+			    (unsigned long long)((zones[i].mzi_cur_size - zones[i].mzi_count * zones[i].mzi_elem_size) >> 10));
+		}
+	}
+	for (unsigned i = 0; i < ns; i++) {
+		mach_memory_info_t *m = &sites[i];
+		uint64_t kib = m->size >> 10, type = m->flags & SITE_TYPE;
+		char what[96];
+		if (kib < min_kib || (m->flags & SITE_ZONE)) {
+			continue;       /* zones are listed above */
+		}
+		if (m->flags & SITE_NAMED) {
+			snprintf(what, sizeof(what), "named %s", m->name);
+		} else if (type == 3) {
+			snprintf(what, sizeof(what), "count %s", m->site < sizeof(kern_counts) / sizeof(*kern_counts) ?
+			    kern_counts[m->site] : "?");
+		} else if (type == 0 && m->site < sizeof(kern_tags) / sizeof(*kern_tags)) {
+			snprintf(what, sizeof(what), "tag %s", kern_tags[m->site]);
+		} else if (type == 0) {
+			snprintf(what, sizeof(what), "tag %llu %s", (unsigned long long)m->site, m->name);
+		} else if (type == 1) {
+			snprintf(what, sizeof(what), "kmod %llu %s", (unsigned long long)m->site, m->name);
+		} else {
+			snprintf(what, sizeof(what), "site 0x%llx %s", (unsigned long long)m->site, m->name);
+		}
+		l[n].kib = kib;
+		snprintf(l[n++].text, sizeof(l[0].text), "%s%s, peak %llu KiB", what, (m->flags & SITE_WIRED) ? " (wired)" : "",
+		    (unsigned long long)(m->peak >> 10));
+	}
+	qsort(l, n, sizeof(*l), kmem_cmp);
+	for (unsigned i = 0; i < n; i++) {
+		printf("%9llu KiB  %s\n", (unsigned long long)l[i].kib, l[i].text);
+	}
+	free(l);
+	vm_deallocate(mach_task_self(), (vm_address_t)names, nn * sizeof(*names));
+	vm_deallocate(mach_task_self(), (vm_address_t)zones, nz * sizeof(*zones));
+	vm_deallocate(mach_task_self(), (vm_address_t)sites, ns * sizeof(*sites));
+	return 0;
+}
+
 static int
 cmd_fill(unsigned mb, unsigned secs)
 {
@@ -623,6 +713,9 @@ main(int argc, char **argv)
 	if (argc > 2 && strcmp(argv[1], "fill") == 0 && a > 0) {
 		return cmd_fill(a, argc > 3 ? b : 30);
 	}
+	if (argc > 1 && strcmp(argv[1], "kmem") == 0) {
+		return cmd_kmem(argc > 2 ? a : 256);
+	}
 	if (argc > 1 && strcmp(argv[1], "surfaces") == 0) {
 		return cmd_text_sysctl("kern.mapple_surf_list");
 	}
@@ -642,6 +735,6 @@ main(int argc, char **argv)
 		return cmd_sysctl(argc - 2, argv + 2);
 	}
 	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC | ls DIR | mv FROM TO | sync | mkdir DIR | chown U G PATH | sysctl NAME.. | kill PID [SIG] |\n"
-	    "       set NAME VALUE | jetsam [NAME..] | pressure PID [warn|critical] | gpu [objects|memory] | surfaces | poster [reset NAME] | fill MB [SEC]\n");
+	    "       set NAME VALUE | jetsam [NAME..] | pressure PID [warn|critical] | gpu [objects|memory] | kmem [KIB] | surfaces | poster [reset NAME] | fill MB [SEC]\n");
 	return 2;
 }
