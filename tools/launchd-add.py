@@ -41,6 +41,9 @@ def main():
         'UserName': 'root',
         'StandardErrorPath': '/dev/console',
         'StandardOutPath': '/dev/console',
+        # above backboardd (170) and SpringBoard (160) on the D22's jetsam bands: the link's helper outlives the UI
+        'JetsamProperties': {'JetsamPriority': 180, 'JetsamMemoryLimit': -1},
+        'EnablePressuredExit': False,
     }
     with open(dst, 'wb') as f:
         plistlib.dump(plist, f, fmt=plistlib.FMT_BINARY)
