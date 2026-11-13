@@ -49,6 +49,7 @@
 #include <sys/sysctl.h>
 #include <time.h>
 #include <unistd.h>
+#include <xpc/xpc.h>
 
 /* libproc and sys/proc_info.h are not in the iOS SDK: the same declarations */
 #define PROC_PIDTASKINFO 4
@@ -602,6 +603,27 @@ cmd_kmem(unsigned min_kib)
 
 int mstat_log(const char *process, unsigned seconds);   /* mstat_log.m */
 
+/* in libSystem on iOS too, but marked macOS-only in the SDK's header */
+extern xpc_connection_t mach_service_connection(const char *name, dispatch_queue_t queue, uint64_t flags)
+    __asm__("_xpc_connection_create_mach_service");
+
+/* BlueTool's XPC service asked as bluetoothd asks it ({script: NAME}: boot, init, deepsleep); its answer printed */
+static int
+cmd_bluetool(const char *script)
+{
+	xpc_connection_t c = mach_service_connection("com.apple.BlueTool", NULL, 0);
+	xpc_object_t m = xpc_dictionary_create(NULL, NULL, 0);
+
+	xpc_connection_set_event_handler(c, ^(xpc_object_t e) { (void)e; });
+	xpc_connection_resume(c);
+	xpc_dictionary_set_string(m, "script", script);
+	xpc_object_t r = xpc_connection_send_message_with_reply_sync(c, m);
+	char *d = xpc_copy_description(r);
+	printf("%s\n", d != NULL ? d : "(nothing)");
+	free(d);
+	return xpc_get_type(r) == XPC_TYPE_DICTIONARY ? 0 : 1;
+}
+
 static int
 cmd_mg(int n, char **keys)
 {
@@ -748,6 +770,9 @@ main(int argc, char **argv)
 	if (argc > 2 && strcmp(argv[1], "log") == 0) {
 		return mstat_log(argv[2], argc > 3 ? b : 120);
 	}
+	if (argc > 2 && strcmp(argv[1], "bluetool") == 0) {
+		return cmd_bluetool(argv[2]);
+	}
 	if (argc > 2 && strcmp(argv[1], "mg") == 0) {
 		return cmd_mg(argc - 2, argv + 2);
 	}
@@ -770,6 +795,6 @@ main(int argc, char **argv)
 		return cmd_sysctl(argc - 2, argv + 2);
 	}
 	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC | ls DIR | mv FROM TO | sync | mkdir DIR | chown U G PATH | sysctl NAME.. | kill PID [SIG] |\n"
-	    "       set NAME VALUE | jetsam [NAME..] | pressure PID [warn|critical] | gpu [objects|memory] | kmem [KIB] | log PROC [SEC] | mg KEY.. | surfaces | poster [reset NAME] | fill MB [SEC]\n");
+	    "       set NAME VALUE | jetsam [NAME..] | pressure PID [warn|critical] | gpu [objects|memory] | kmem [KIB] | log PROC [SEC] | mg KEY.. | bluetool SCRIPT | surfaces | poster [reset NAME] | fill MB [SEC]\n");
 	return 2;
 }
