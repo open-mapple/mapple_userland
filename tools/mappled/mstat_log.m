@@ -21,6 +21,8 @@ int mstat_log(const char *process, unsigned seconds)
             [inv getReturnValue:&s];
             store = s;
         }
+        if (!store)   // iOS: the scope store (scope 0, the system, is marked macOS only too)
+            store = [OSLogStore storeWithScope:(OSLogStoreScope)0 error:&e];
         if (!store) {
             printf("log: no system log store (%s)\n", e.description.UTF8String ?: "localStoreAndReturnError: missing");
             return 1;
