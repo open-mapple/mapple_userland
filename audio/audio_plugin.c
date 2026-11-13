@@ -788,6 +788,7 @@ set_property_data(AudioServerPlugInDriverRef driver, AudioObjectID object, pid_t
 		wanted = *(const Float32 *)data;
 		wanted = address->mSelector == kAudioLevelControlPropertyDecibelValue ? db_to_scalar(wanted) :
 		    wanted < 0 ? 0 : wanted > 1 ? 1 : wanted;
+		wanted = isnan(wanted) ? 0 : wanted;     /* NaN passes both clamps: silence, not the loudest */
 		pthread_mutex_lock(&lock);
 		volume = wanted;
 		volume_to_kernel();
