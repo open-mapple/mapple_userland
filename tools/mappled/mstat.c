@@ -740,12 +740,19 @@ main(int argc, char **argv)
 		return 0;
 	}
 	if (argc > 3 && strcmp(argv[1], "set") == 0) {
-		int v = atoi(argv[3]);
-		if (sysctlbyname(argv[2], NULL, NULL, &v, sizeof(v)) != 0) {
+		char *end, text[512] = "";
+		int v = (int)strtol(argv[3], &end, 0);
+		for (int i = 3; i < argc; i++) {                /* not a number: a string, the words joined again */
+			strlcat(text, argv[i], sizeof(text));
+			strlcat(text, i + 1 < argc ? " " : "", sizeof(text));
+		}
+		int failed = *end == 0 && argc == 4 ? sysctlbyname(argv[2], NULL, NULL, &v, sizeof(v)) :
+		    sysctlbyname(argv[2], NULL, NULL, text, strlen(text) + 1);
+		if (failed != 0) {
 			perror(argv[2]);
 			return 1;
 		}
-		printf("%s = %d\n", argv[2], v);
+		printf("%s = %s\n", argv[2], text);
 		return 0;
 	}
 	if (argc > 4 && strcmp(argv[1], "jetsam") == 0 && strcmp(argv[2], "set") == 0) {
