@@ -607,16 +607,18 @@ int mstat_log(const char *process, unsigned seconds);   /* mstat_log.m */
 extern xpc_connection_t mach_service_connection(const char *name, dispatch_queue_t queue, uint64_t flags)
     __asm__("_xpc_connection_create_mach_service");
 
-/* BlueTool's XPC service asked as bluetoothd asks it ({script: NAME}: boot, init, deepsleep); its answer printed */
+/* BlueTool's XPC service asked to run a script ({kMsgId: RunBuiltinScript, kMsgArgs: {script: NAME}}: boot, init, deepsleep) */
 static int
 cmd_bluetool(const char *script)
 {
 	xpc_connection_t c = mach_service_connection("com.apple.BlueTool", NULL, 0);
-	xpc_object_t m = xpc_dictionary_create(NULL, NULL, 0);
+	xpc_object_t m = xpc_dictionary_create(NULL, NULL, 0), args = xpc_dictionary_create(NULL, NULL, 0);
 
 	xpc_connection_set_event_handler(c, ^(xpc_object_t e) { (void)e; });
 	xpc_connection_resume(c);
-	xpc_dictionary_set_string(m, "script", script);
+	xpc_dictionary_set_string(args, "script", script);
+	xpc_dictionary_set_string(m, "kMsgId", "RunBuiltinScript");
+	xpc_dictionary_set_value(m, "kMsgArgs", args);
 	xpc_object_t r = xpc_connection_send_message_with_reply_sync(c, m);
 	char *d = xpc_copy_description(r);
 	printf("%s\n", d != NULL ? d : "(nothing)");
