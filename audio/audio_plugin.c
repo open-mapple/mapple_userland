@@ -28,8 +28,8 @@
  *               the kernel's motor driver, /dev/mapple-haptic (see actuator_write())
  *   "Codec"     one input of one channel: on an iPhone, the audio codec that the built-in
  *               microphones are on, of which the virtual audio device makes the built-in microphone
- *               port; its samples come from the kernel, /dev/mapple-mic (the phone's main
- *               microphone, boot-arg mic=4), which listens only while this input runs (see codec_read())
+ *               port; its samples come from the kernel, /dev/mapple-mic (silence until the phone's
+ *               microphone has a driver), which listens only while this input runs (see codec_read())
  *
  * CoreAudio's own null device ("Null_Device", described in the framework's Info.plist, playing
  * into nowhere) stays as it is: it is the only device the virtual audio device takes while it
@@ -966,12 +966,11 @@ begin_end_io_operation(__unused AudioServerPlugInDriverRef driver, __unused Audi
 /*
  * What Darwin plays on the actuator -- the haptics: the system's feedbacks and the ringer's vibration,
  * CoreHaptics' patterns, UIKit's feedbacks, as waveforms of one channel -- goes to the kernel's motor
- * driver (/dev/mapple-haptic, drivers/haptic/hakios.haptic.c, haptic=5), which plays Android's own
- * waveforms on the phone's motor by it. (Darwin plays on this device at all only because the device
- * tree says the phone's haptics are "closed-loop": see mkidentity.py.) Said the first times, with
- * how loud.
+ * driver (/dev/mapple-haptic: bsd/dev/mapple_audio.c, the motor with mp_vib_steps=2), which runs the
+ * phone's motor while the waveform is loud enough. (Darwin plays on this device at all only because the
+ * device tree says the phone's haptics are "closed-loop".) Said the first times, with how loud.
  */
-static int haptic = -1;          /* the motor driver; -2: not there (the kernel runs without haptic=5) */
+static int haptic = -1;          /* the motor driver; -2: not there (a kernel without /dev/mapple-haptic) */
 static unsigned haptic_said;
 
 static void
