@@ -24,6 +24,7 @@
  *   mstat kmem [KIB]     the kernel's memory by zone and by allocation site (mach_memory_info, as zprint): each line
  *                        of at least KIB KiB (default 256), largest first; two of them diffed on the Mac
  *   mstat log PROC [SEC] the unified log of process PROC over the last SEC seconds (default 120), read live
+ *   mstat stack PID [N]  N stackshots of PID (default 1), 1 s apart: each thread's state, wait and frames (mstat_stack.c)
  *   mstat mg KEY..       MobileGestalt's answer to each key (MGCopyAnswer), e.g. main-screen-width DeviceClass
  *   mstat surfaces       every live IOSurface (kern.mapple_surf_list, DEVELOPMENT kernels): size, maker, users; totals
  *   mstat gpu objects    each Metal process writes its live buffers and textures to vmg-stats/<pid>.objects; the totals
@@ -602,6 +603,7 @@ cmd_kmem(unsigned min_kib)
 }
 
 int mstat_log(const char *process, unsigned seconds);   /* mstat_log.m */
+int mstat_stack(int pid, unsigned count);               /* mstat_stack.c */
 
 /* in libSystem on iOS too, but marked macOS-only in the SDK's header */
 extern xpc_connection_t mach_service_connection(const char *name, dispatch_queue_t queue, uint64_t flags)
@@ -779,6 +781,9 @@ main(int argc, char **argv)
 	if (argc > 2 && strcmp(argv[1], "log") == 0) {
 		return mstat_log(argv[2], argc > 3 ? b : 120);
 	}
+	if (argc > 2 && strcmp(argv[1], "stack") == 0) {
+		return mstat_stack((int)a, b ? b : 1);
+	}
 	if (argc > 2 && strcmp(argv[1], "bluetool") == 0) {
 		return cmd_bluetool(argv[2]);
 	}
@@ -804,6 +809,6 @@ main(int argc, char **argv)
 		return cmd_sysctl(argc - 2, argv + 2);
 	}
 	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC | ls DIR | mv FROM TO | sync | mkdir DIR | chown U G PATH | sysctl NAME.. | kill PID [SIG] |\n"
-	    "       set NAME VALUE | jetsam [NAME..] | pressure PID [warn|critical] | gpu [objects|memory] | kmem [KIB] | log PROC [SEC] | mg KEY.. | bluetool SCRIPT | surfaces | poster [reset NAME] | fill MB [SEC]\n");
+	    "       set NAME VALUE | jetsam [NAME..] | pressure PID [warn|critical] | gpu [objects|memory] | kmem [KIB] | log PROC [SEC] | stack PID [N] | mg KEY.. | bluetool SCRIPT | surfaces | poster [reset NAME] | fill MB [SEC]\n");
 	return 2;
 }
