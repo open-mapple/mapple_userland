@@ -12,8 +12,8 @@ DIR="$(dirname "$OUT")"
 mkdir -p "$DIR"
 
 if SDK="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)" && [ -n "$SDK" ]; then
-  build() {  # build OUTPUT SOURCE
-    xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 -O2 -Wall -o "$1" "$2"
+  build() {  # build OUTPUT SOURCE..
+    xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 -O2 -Wall -o "$1" "${@:2}"
     codesign -s - -f "$1"
   }
 else
@@ -49,7 +49,8 @@ build "$DIR/vln" "$HERE/vln.c"
 # bootrec (raw MAPPLEBR record, tools/mapple-link.py bootrec), next to mappled
 build "$DIR/bootrec" "$HERE/bootrec.c"
 # mstat (load, processes, memory: tools/mappled/mstat.c), next to mappled
-build "$DIR/mstat" "$HERE/mstat.c"
+build "$DIR/mstat" "$HERE/mstat.c" "$HERE/mstat_log.m" -fobjc-arc -framework Foundation -framework OSLog -framework CoreFoundation
+codesign -s - -f --entitlements "$HERE/mstat.entitlements" "$DIR/mstat"   # mstat log: the system log store
 # mapple-usbd (PTP + usbmux of the std USB persona, docs/VIVA-USB-PERSONA.md), next to mappled
 build "$DIR/mapple-usbd" "$HERE/mapple-usbd.c"
 file "$DIR/mapple-usbd"

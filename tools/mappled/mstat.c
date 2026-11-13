@@ -23,6 +23,8 @@
  *                        the pages prepared (wired) and completed for the GPU: user memory and IOSurfaces
  *   mstat kmem [KIB]     the kernel's memory by zone and by allocation site (mach_memory_info, as zprint): each line
  *                        of at least KIB KiB (default 256), largest first; two of them diffed on the Mac
+ *   mstat log PROC [SEC] the unified log of process PROC over the last SEC seconds (default 120), read live
+ *   mstat mg KEY..       MobileGestalt's answer to each key (MGCopyAnswer), e.g. main-screen-width DeviceClass
  *   mstat surfaces       every live IOSurface (kern.mapple_surf_list, DEVELOPMENT kernels): size, maker, users; totals
  *   mstat gpu objects    each Metal process writes its live buffers and textures to vmg-stats/<pid>.objects; the totals
  *   mstat gpu            per process using the Metal driver: Mesa's BO cache and what pressure gave back
@@ -30,6 +32,8 @@
  *                        (the lock screen falls back to a default poster when PosterBoard starts again)
  */
 #include <dirent.h>
+#include <dlfcn.h>
+#include <CoreFoundation/CoreFoundation.h>
 #include <notify.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
@@ -596,6 +600,31 @@ cmd_kmem(unsigned min_kib)
 	return 0;
 }
 
+int mstat_log(const char *process, unsigned seconds);   /* mstat_log.m */
+
+static int
+cmd_mg(int n, char **keys)
+{
+	void *mg = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
+	CFTypeRef (*copy)(CFStringRef, CFDictionaryRef) = mg ? dlsym(mg, "MGCopyAnswer") : NULL;
+	if (!copy) {
+		printf("mg: no MGCopyAnswer\n");
+		return 1;
+	}
+	for (int i = 0; i < n; i++) {
+		CFStringRef k = CFStringCreateWithCString(NULL, keys[i], kCFStringEncodingUTF8);
+		CFTypeRef v = copy(k, NULL);
+		CFStringRef d = v ? CFCopyDescription(v) : NULL;
+		char buf[512] = "(none)";
+		if (d) CFStringGetCString(d, buf, sizeof(buf), kCFStringEncodingUTF8);
+		printf("%s: %s\n", keys[i], buf);
+		if (d) CFRelease(d);
+		if (v) CFRelease(v);
+		CFRelease(k);
+	}
+	return 0;
+}
+
 static int
 cmd_fill(unsigned mb, unsigned secs)
 {
@@ -716,6 +745,12 @@ main(int argc, char **argv)
 	if (argc > 1 && strcmp(argv[1], "kmem") == 0) {
 		return cmd_kmem(argc > 2 ? a : 256);
 	}
+	if (argc > 2 && strcmp(argv[1], "log") == 0) {
+		return mstat_log(argv[2], argc > 3 ? b : 120);
+	}
+	if (argc > 2 && strcmp(argv[1], "mg") == 0) {
+		return cmd_mg(argc - 2, argv + 2);
+	}
 	if (argc > 1 && strcmp(argv[1], "surfaces") == 0) {
 		return cmd_text_sysctl("kern.mapple_surf_list");
 	}
@@ -735,6 +770,6 @@ main(int argc, char **argv)
 		return cmd_sysctl(argc - 2, argv + 2);
 	}
 	printf("usage: mstat cpu MS N | top MS [N] | mem | burn SEC | ls DIR | mv FROM TO | sync | mkdir DIR | chown U G PATH | sysctl NAME.. | kill PID [SIG] |\n"
-	    "       set NAME VALUE | jetsam [NAME..] | pressure PID [warn|critical] | gpu [objects|memory] | kmem [KIB] | surfaces | poster [reset NAME] | fill MB [SEC]\n");
+	    "       set NAME VALUE | jetsam [NAME..] | pressure PID [warn|critical] | gpu [objects|memory] | kmem [KIB] | log PROC [SEC] | mg KEY.. | surfaces | poster [reset NAME] | fill MB [SEC]\n");
 	return 2;
 }
