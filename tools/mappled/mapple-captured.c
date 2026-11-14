@@ -76,6 +76,7 @@ static struct {
 	void *(*preview_open)(int, int, uint32_t *);
 	uint64_t (*preview_register)(void *, IOSurfaceRef);
 	void (*preview_insert)(void *, uint64_t, image_released, void *);
+	void (*preview_collect)(void *);
 	void (*preview_close)(void *, uint32_t);
 } cm;
 
@@ -593,7 +594,7 @@ surface_create(int width, int height, int bytes, uint32_t format)
 	return s;
 }
 
-static atomic_uint queued, released;
+static atomic_uint ticks, queued, released;
 
 static void
 image_shown(__unused void *queue, __unused uint64_t image, void *flag)
@@ -602,10 +603,16 @@ image_shown(__unused void *queue, __unused uint64_t image, void *flag)
 	atomic_fetch_add(&released, 1);
 }
 
-/* One preview frame: the next buffer CoreAnimation has let go of, filled and queued. */
+/* One preview frame: the next buffer CoreAnimation has let go of, filled and queued. Its releases come only from
+ * collecting the queue, as CMCapture's preview sink does before each frame. */
 static void
 preview_tick(struct session *s)
 {
+	cm.preview_collect(s->queue);
+	if (atomic_fetch_add(&ticks, 1) % (5 * FPS) == 0) {
+		fprintf(stderr, "mapple-captured: preview: %u frames queued, %u let go by CoreAnimation\n",
+		    atomic_load(&queued), atomic_load(&released));
+	}
 	for (int i = 0; i < PREVIEW_BUFFERS; i++) {
 		bool idle = false;
 
@@ -617,10 +624,7 @@ preview_tick(struct session *s)
 			    cam.frame++);
 			IOSurfaceUnlock(surface, 0, NULL);
 			cm.preview_insert(s->queue, s->image[i], image_shown, &s->shown[i]);
-			if (atomic_fetch_add(&queued, 1) % (5 * FPS) == 0) {
-				fprintf(stderr, "mapple-captured: preview: %u frames queued, %u let go by CoreAnimation\n",
-				    atomic_load(&queued), atomic_load(&released));
-			}
+			atomic_fetch_add(&queued, 1);
 			return;
 		}
 	}
@@ -1065,6 +1069,7 @@ unsupported_reply(__unused xpc_connection_t conn, __unused xpc_object_t msg, __u
 static void *(*ca_queue_create)(uint32_t, uint32_t, uint32_t);
 static void (*ca_queue_flags)(void *, uint32_t, uint32_t);
 static uint64_t (*ca_queue_register)(void *, IOSurfaceRef, uint32_t);
+static uint64_t (*ca_queue_collect)(void *);
 static uint64_t (*ca_queue_insert)(void *, double, uint32_t, uint64_t, uint32_t, image_released, void *);
 static bool (*ca_server_running)(void);
 static double (*ca_media_time)(void);
@@ -1205,6 +1210,12 @@ preview_insert(void *queue, uint64_t image, image_released done, void *info)
 }
 
 static void
+preview_collect(void *queue)
+{
+	ca_queue_collect(queue);
+}
+
+static void
 preview_close(void *queue, uint32_t slot)
 {
 	void *pool = objc_autoreleasePoolPush();
@@ -1277,9 +1288,10 @@ main(void)
 	ca_queue_flags = ca ? dlsym(ca, "CAImageQueueSetFlags") : NULL;
 	ca_queue_register = ca ? dlsym(ca, "CAImageQueueRegisterIOSurfaceBuffer") : NULL;
 	ca_queue_insert = ca ? dlsym(ca, "CAImageQueueInsertImage") : NULL;
+	ca_queue_collect = ca ? dlsym(ca, "CAImageQueueCollect") : NULL;
 	ca_server_running = ca ? dlsym(ca, "CARenderServerIsRunning") : NULL;
 	ca_media_time = ca ? dlsym(ca, "CACurrentMediaTime") : NULL;
-	if (!ca_queue_flags || !ca_queue_register || !ca_queue_insert || !ca_media_time) {
+	if (!ca_queue_flags || !ca_queue_register || !ca_queue_insert || !ca_queue_collect || !ca_media_time) {
 		ca_queue_create = NULL;
 	}
 	if (!dlopen("/System/Library/PrivateFrameworks/CMCapture.framework/CMCapture", RTLD_NOW)) {
@@ -1291,6 +1303,7 @@ main(void)
 	cm.preview_open = preview_open;
 	cm.preview_register = preview_register;
 	cm.preview_insert = preview_insert;
+	cm.preview_collect = preview_collect;
 	cm.preview_close = preview_close;
 	torch = CFDataCreateMutable(NULL, 0);
 	torch_queue = dispatch_queue_create("mapple-captured.torch", DISPATCH_QUEUE_SERIAL);

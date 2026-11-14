@@ -225,12 +225,34 @@ fake_preview_register(__unused void *q, IOSurfaceRef s)
 	return 1000 + (uint64_t)queue_open * 10 + (uint64_t)inserted;
 }
 
+/* CoreAnimation's side: a queued image is let go only when the producer collects, and the newest stays shown. */
+static struct {
+	uint64_t image;
+	image_released done;
+	void *info;
+} pending[8];
+static int npending, collected;
+
 static void
-fake_preview_insert(void *q, uint64_t image, image_released done, void *info)
+fake_preview_insert(__unused void *q, uint64_t image, image_released done, void *info)
 {
+	assert(npending < 8);
 	inserted++;
 	last_image = image;
-	done(q, image, info);
+	pending[npending++] = (typeof(pending[0])){ image, done, info };
+}
+
+static void
+fake_preview_collect(void *q)
+{
+	collected++;
+	for (int i = 0; i + 1 < npending; i++) {
+		pending[i].done(q, pending[i].image, pending[i].info);
+	}
+	if (npending > 1) {
+		pending[0] = pending[npending - 1];
+		npending = 1;
+	}
 }
 
 static void
@@ -447,9 +469,9 @@ session_tests(void)
 	assert(find("DidStartPreviewing", at) > at && find("DidStartRunning", at) > at);
 	assert(find("ConfigurationDidBecomeLive", at) > find("DidStartRunning", at));
 	assert(queue_open == 1);
-	usleep(200000);
+	usleep(400000);
 	dispatch_sync(cam.queue, ^{});
-	assert(inserted >= 2);
+	assert(inserted > PREVIEW_BUFFERS && collected >= inserted);     /* frames keep coming past the buffer count */
 	IOSurfaceLock(s->surface[0], kIOSurfaceLockReadOnly, NULL);
 	uint32_t *px = IOSurfaceGetBaseAddress(s->surface[0]);
 	assert(px[0] == 0xffffffff && px[PREVIEW_W - 1] == 0xff000000);   /* white bar on the left, black on the right */
@@ -530,6 +552,15 @@ session_tests(void)
 	usleep(100000);
 	dispatch_sync(cam.queue, ^{});
 	assert(inserted == before);
+
+	/* running again: the same queue, announced again, frames moving */
+	nposted = 0;
+	capturesession_noreply(NULL, on(OP('b', 'r', 'u', 'n'), id));
+	assert(find("ImageQueueUpdated", 0) >= 0 && find("DidStartPreviewing", 0) >= 0 && queue_open == 1);
+	usleep(400000);
+	dispatch_sync(cam.queue, ^{});
+	assert(inserted > before + PREVIEW_BUFFERS);
+	capturesession_noreply(NULL, on(OP('e', 'r', 'u', 'n'), id));
 	assert(ask(capturesession_reply, on(OP('d', 'i', 's', 'p'), id), &r) == 0 && queue_closed == 1);
 	(void)last_image;
 }
@@ -557,6 +588,7 @@ main(void)
 	cm.preview_open = fake_preview_open;
 	cm.preview_register = fake_preview_register;
 	cm.preview_insert = fake_preview_insert;
+	cm.preview_collect = fake_preview_collect;
 	cm.preview_close = fake_preview_close;
 	torch = CFDataCreateMutable(NULL, 0);
 	torch_queue = dispatch_queue_create("test", DISPATCH_QUEUE_SERIAL);
