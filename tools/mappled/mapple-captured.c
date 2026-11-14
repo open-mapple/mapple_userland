@@ -281,7 +281,7 @@ flashlight_noreply(__unused xpc_connection_t conn, xpc_object_t msg)
 #define PREVIEW_W       1504
 #define PREVIEW_H       1128
 #define FPS             30
-#define PREVIEW_BUFFERS 4
+#define PREVIEW_BUFFERS 3
 #define FOURCC(s)       ((uint32_t)(s)[0] << 24 | (uint32_t)(s)[1] << 16 | (uint32_t)(s)[2] << 8 | (uint32_t)(s)[3])
 
 /* The frame source: fills a BGRA buffer. The test pattern now; the kernel's raw frames through the ISP later. */
@@ -354,7 +354,7 @@ camera_attributes(void)
 	CFDictionarySetValue(a, CFSTR("Exposure"), kCFBooleanFalse);
 	CFDictionarySetValue(a, CFSTR("Focus"), kCFBooleanFalse);
 	CFDictionarySetValue(a, CFSTR("WhiteBalance"), kCFBooleanFalse);
-	CFDictionarySetValue(a, CFSTR("Flash"), kCFBooleanFalse);
+	CFDictionarySetValue(a, CFSTR("Flash"), kCFBooleanTrue);       /* Camera.app asks the iPhone X's flash modes */
 	CFDictionarySetValue(a, CFSTR("Torch"), kCFBooleanFalse);
 	CFDictionarySetValue(a, CFSTR("HEIF"), kCFBooleanFalse);
 	CFDictionarySetValue(a, CFSTR("HEVC"), kCFBooleanFalse);
@@ -384,6 +384,7 @@ camera_format(void)
 	put(f, CFSTR("VideoDefaultMaxFrameRate"), num_float(FPS));
 	put(f, CFSTR("VideoFieldOfView"), num_float(65.0));
 	CFDictionarySetValue(f, CFSTR("DefaultActiveFormat"), kCFBooleanTrue);
+	CFDictionarySetValue(f, CFSTR("HDRSupported"), kCFBooleanTrue);   /* and its HDR modes; both taken, not acted on */
 	put(f, CFSTR("AVCaptureSessionPresets"), CFArrayCreate(NULL, presets, 2, &kCFTypeArrayCallBacks));
 	return f;
 }
@@ -591,10 +592,13 @@ surface_create(int width, int height, int bytes, uint32_t format)
 	return s;
 }
 
+static atomic_uint queued, released;
+
 static void
 image_shown(__unused void *queue, __unused uint64_t image, void *flag)
 {
 	atomic_store((atomic_bool *)flag, false);
+	atomic_fetch_add(&released, 1);
 }
 
 /* One preview frame: the next buffer CoreAnimation has let go of, filled and queued. */
@@ -612,6 +616,10 @@ preview_tick(struct session *s)
 			    cam.frame++);
 			IOSurfaceUnlock(surface, 0, NULL);
 			cm.preview_insert(s->queue, s->image[i], image_shown, &s->shown[i]);
+			if (atomic_fetch_add(&queued, 1) % (5 * FPS) == 0) {
+				fprintf(stderr, "mapple-captured: preview: %u frames queued, %u let go by CoreAnimation\n",
+				    atomic_load(&queued), atomic_load(&released));
+			}
 			return;
 		}
 	}
@@ -1058,6 +1066,7 @@ static void (*ca_queue_flags)(void *, uint32_t, uint32_t);
 static uint64_t (*ca_queue_register)(void *, IOSurfaceRef, uint32_t);
 static uint64_t (*ca_queue_insert)(void *, double, uint32_t, uint64_t, uint32_t, image_released, void *);
 static bool (*ca_server_running)(void);
+static double (*ca_media_time)(void);
 static id ca_context;
 
 void *objc_autoreleasePoolPush(void);
@@ -1162,8 +1171,11 @@ preview_open(int width, int height, uint32_t *slot)
 	if (queue && !ca_context) {
 		id c = (id)objc_getClass("CAContext");
 
-		ca_context = send(send(c, ca_server_running && ca_server_running() ? "remoteContext" : "localContext"),
-		    "retain");
+		bool remote = ca_server_running && ca_server_running();
+
+		ca_context = send(send(c, remote ? "remoteContext" : "localContext"), "retain");
+		fprintf(stderr, "mapple-captured: preview context %u (%s)\n", send_u32(ca_context, "contextId"),
+		    remote ? "the render server's" : "local: no render server");
 	}
 	if (queue && ca_context) {
 		ca_queue_flags(queue, 0x19, 0x19);
@@ -1187,7 +1199,7 @@ preview_register(void *queue, IOSurfaceRef surface)
 static void
 preview_insert(void *queue, uint64_t image, image_released done, void *info)
 {
-	ca_queue_insert(queue, -1.0, 3, image, 1, done, info);  /* as CoreMedia's own renderer queues a buffer */
+	ca_queue_insert(queue, ca_media_time(), 3, image, 1, done, info);  /* shown now: CMCapture's flags, its host time */
 }
 
 static void
@@ -1264,7 +1276,8 @@ main(void)
 	ca_queue_register = ca ? dlsym(ca, "CAImageQueueRegisterIOSurfaceBuffer") : NULL;
 	ca_queue_insert = ca ? dlsym(ca, "CAImageQueueInsertImage") : NULL;
 	ca_server_running = ca ? dlsym(ca, "CARenderServerIsRunning") : NULL;
-	if (!ca_queue_flags || !ca_queue_register || !ca_queue_insert) {
+	ca_media_time = ca ? dlsym(ca, "CACurrentMediaTime") : NULL;
+	if (!ca_queue_flags || !ca_queue_register || !ca_queue_insert || !ca_media_time) {
 		ca_queue_create = NULL;
 	}
 	if (!dlopen("/System/Library/PrivateFrameworks/CMCapture.framework/CMCapture", RTLD_NOW)) {

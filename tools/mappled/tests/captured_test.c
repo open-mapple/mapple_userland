@@ -370,6 +370,7 @@ source_tests(void)
 	assert(xpc_dictionary_get_uint64(source, "attributesDictionary") == (uint64_t)CFDictionaryGetCount(cam.attributes));
 	assert(last_set_dictionary == cam.attributes);
 	assert(number(cam.attributes, "Position") == 1 && number(cam.attributes, "DeviceType") == 2);
+	assert(CFDictionaryGetValue(cam.attributes, CFSTR("Flash")) == kCFBooleanTrue);
 	assert(CFEqual(CFDictionaryGetValue(cam.attributes, CFSTR("UniqueID")),
 	    CFSTR("com.apple.avfoundation.avcapturedevice.built-in_video:0")));
 	assert(xpc_array_get_count(xpc_dictionary_get_value(source, "formatsArray")) == 1);
@@ -379,6 +380,7 @@ source_tests(void)
 	n = CFDictionaryGetValue(encoded_format, CFSTR("VideoMaxFrameRate"));
 	assert(n && CFNumberGetValue(n, kCFNumberSInt64Type, &v) && v == 30);
 	assert(CFDictionaryGetValue(encoded_format, CFSTR("Name")) != NULL);
+	assert(CFDictionaryGetValue(encoded_format, CFSTR("HDRSupported")) == kCFBooleanTrue);
 
 	/* the active format is the format's encoding; set properties read back; unknown ones are not there */
 	c = request(OP('.', 'c', 'p', 'y'));
