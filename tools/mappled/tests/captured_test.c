@@ -413,7 +413,8 @@ session_tests(void)
 
 	assert(ask(capturesession_reply, request(OP('c', 'r', 'e', 'a')), &r) == 0);
 	id = xpc_dictionary_get_uint64(r, ".objectID");
-	assert(id == (uint64_t)associated && served[id].serializer == (void *)session_serialize);
+	serializer typed = session_serialize;
+	assert(id == (uint64_t)associated && served[id].serializer == (void *)typed);
 	s = served[id].refcon;
 
 	/* without a preview sink (run 38's first configurations): running, no preview */
@@ -485,11 +486,11 @@ session_tests(void)
 
 	/* the surface leaves as its XPC object, the rest as the payload */
 	xpc_object_t out = xpc_dictionary_create(NULL, NULL, 0);
-	assert(session_serialize(CFSTR("IrisStillImageComplete"), s->object, s, payloads[at], out, NULL) == 2);
+	assert(session_serialize(s->object, s, CFSTR("IrisStillImageComplete"), payloads[at], NULL, out) == 2);
 	assert(xpc_dictionary_get_uint64(out, "Surface_Serialized") == IOSurfaceGetAllocSize(jpeg));
 	assert(!CFDictionaryContainsKey(last_set_dictionary, CFSTR("Surface")));
 	assert(CFDictionaryContainsKey(last_set_dictionary, CFSTR("SurfaceSize")));
-	assert(session_serialize(CFSTR("DidStartRunning"), s->object, s, payloads[0], out, NULL) == 0);
+	assert(session_serialize(s->object, s, CFSTR("DidStartRunning"), payloads[0], NULL, out) == 0);
 
 	/* the still image output's request, the same photo under its own names */
 	nposted = 0;

@@ -35,8 +35,9 @@ typedef struct {
 	void *accept, *coalesce;
 } server_callbacks;
 
-/* 0: the server sends the payload as it is; 2: the serializer filled the message itself. */
-typedef int (*serializer)(CFStringRef, CFTypeRef, void *, CFDictionaryRef, xpc_object_t, CFDictionaryRef *);
+/* As CoreMedia's figXPC_SendOneNotification calls it: object, refcon, name, payload, a substitute payload, the
+ * message. 0: the server sends the payload as it is; 2: the serializer filled the message itself. */
+typedef int (*serializer)(CFTypeRef, void *, CFStringRef, CFDictionaryRef, CFDictionaryRef *, xpc_object_t);
 typedef void (*image_released)(void *, uint64_t, void *);
 
 /* What a session's configuration and a photo request come down to here. */
@@ -709,8 +710,8 @@ session_free(void *refcon)
 
 /* Photos: the encoded image in an IOSurface, sent as its XPC object (CMCapture's own "_Serialized" keys). */
 static int
-session_serialize(__unused CFStringRef name, __unused CFTypeRef object, __unused void *refcon, CFDictionaryRef payload,
-    xpc_object_t msg, __unused CFDictionaryRef *substitute)
+session_serialize(__unused CFTypeRef object, __unused void *refcon, __unused CFStringRef name, CFDictionaryRef payload,
+    __unused CFDictionaryRef *substitute, xpc_object_t msg)
 {
 	static const char *const keys[] = { "Surface", "PreviewSurface", "ThumbnailSurface" };
 	CFMutableDictionaryRef rest = NULL;
@@ -1171,11 +1172,12 @@ preview_open(int width, int height, uint32_t *slot)
 	if (queue && !ca_context) {
 		id c = (id)objc_getClass("CAContext");
 
-		bool remote = ca_server_running && ca_server_running();
+		/* CARenderServerIsRunning() is true only inside the render server itself (backboardd) */
+		bool local = ca_server_running && ca_server_running();
 
-		ca_context = send(send(c, remote ? "remoteContext" : "localContext"), "retain");
+		ca_context = send(send(c, local ? "localContext" : "remoteContext"), "retain");
 		fprintf(stderr, "mapple-captured: preview context %u (%s)\n", send_u32(ca_context, "contextId"),
-		    remote ? "the render server's" : "local: no render server");
+		    local ? "local" : "remote");
 	}
 	if (queue && ca_context) {
 		ca_queue_flags(queue, 0x19, 0x19);
