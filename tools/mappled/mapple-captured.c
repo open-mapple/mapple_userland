@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/sysctl.h>
+#include <time.h>
 #include <xpc/xpc.h>
 
 typedef int32_t OSStatus;
@@ -283,7 +284,7 @@ flashlight_noreply(__unused xpc_connection_t conn, xpc_object_t msg)
 #define PREVIEW_W       1504
 #define PREVIEW_H       1128
 #define FPS             30
-#define PREVIEW_BUFFERS 3
+#define PREVIEW_BUFFERS 5
 #define FOURCC(s)       ((uint32_t)(s)[0] << 24 | (uint32_t)(s)[1] << 16 | (uint32_t)(s)[2] << 8 | (uint32_t)(s)[3])
 
 /* The frame source: fills a BGRA buffer. The test pattern now; the kernel's raw frames through the ISP later. */
@@ -296,19 +297,22 @@ pattern(uint8_t *bgra, size_t stride, int w, int h, uint64_t frame)
 	static const uint32_t bars[8] = { 0xffffff, 0xffff00, 0x00ffff, 0x00ff00, 0xff00ff, 0xff0000, 0x0000ff, 0x000000 };
 	int side = h / 6, span = w - side, pos = (int)(frame * (uint64_t)w / 90 % (uint64_t)(2 * span));
 	int bx = pos < span ? pos : 2 * span - pos, by = (h - side) / 2, bit = w / 20, base = h - 2 * bit;
+	uint32_t bar_row[w];
 
+	for (int x = 0; x < w; x++) {
+		bar_row[x] = 0xff000000 | bars[x * 8 / w];     /* BGRA in memory, little-endian */
+	}
 	for (int y = 0; y < h; y++) {
 		uint32_t *row = (uint32_t *)(bgra + (size_t)y * stride);
 
-		for (int x = 0; x < w; x++) {
-			uint32_t rgb = bars[x * 8 / w];
-
-			if (x >= bx && x < bx + side && y >= by && y < by + side) {
-				rgb = 0x808080;
-			} else if (y >= base && y < base + bit && x / bit >= 2 && x / bit < 18 && x % bit < bit - 2) {
-				rgb = (frame >> (17 - x / bit) & 1) ? 0xffffff : 0x202020;
+		memcpy(row, bar_row, sizeof(bar_row));
+		for (int x = 2 * bit; y >= base && y < base + bit && x < 18 * bit; x++) {
+			if (x % bit < bit - 2) {
+				row[x] = (frame >> (17 - x / bit) & 1) ? 0xffffffff : 0xff202020;
 			}
-			row[x] = 0xff000000 | rgb;      /* BGRA in memory, little-endian */
+		}
+		for (int x = bx; y >= by && y < by + side && x < bx + side; x++) {
+			row[x] = 0xff808080;
 		}
 	}
 }
@@ -336,6 +340,7 @@ struct session {
 	IOSurfaceRef surface[PREVIEW_BUFFERS];
 	uint64_t image[PREVIEW_BUFFERS];
 	atomic_bool shown[PREVIEW_BUFFERS];
+	int last;                       /* the buffer queued last */
 };
 
 static CFDictionaryRef
@@ -594,7 +599,8 @@ surface_create(int width, int height, int bytes, uint32_t format)
 	return s;
 }
 
-static atomic_uint ticks, queued, released;
+static atomic_uint ticks, queued, released, in_use;
+static uint64_t longest_tick;
 
 static void
 image_shown(__unused void *queue, __unused uint64_t image, void *flag)
@@ -603,31 +609,57 @@ image_shown(__unused void *queue, __unused uint64_t image, void *flag)
 	atomic_fetch_add(&released, 1);
 }
 
-/* One preview frame: the next buffer CoreAnimation has let go of, filled and queued. Its releases come only from
- * collecting the queue, as CMCapture's preview sink does before each frame. */
+/*
+ * The oldest buffer CoreAnimation has let go of (its releases come only from collecting the queue, as CMCapture's
+ * preview sink does before each frame) that no one still uses, locked for writing; -1 if none. The render server
+ * counts a surface it shows as in use, and the kernel's lock fails while a GPU job still reads it. Only if every
+ * buffer let go of is counted in use does one of those get the frame.
+ */
+static int
+preview_buffer(struct session *s, bool *used)
+{
+	for (int pass = 0; pass < 2; pass++) {
+		for (int k = 1; k <= PREVIEW_BUFFERS; k++) {
+			int i = (s->last + k) % PREVIEW_BUFFERS;
+
+			if (!atomic_load(&s->shown[i]) && (pass == 1 || !IOSurfaceIsInUse(s->surface[i])) &&
+			    IOSurfaceLock(s->surface[i], kIOSurfaceLockAvoidSync, NULL) == 0) {
+				*used = pass == 1;
+				return i;
+			}
+		}
+	}
+	return -1;
+}
+
 static void
 preview_tick(struct session *s)
 {
+	uint64_t start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW), took;
+	bool used = false;
+	int i;
+
 	cm.preview_collect(s->queue);
 	if (atomic_fetch_add(&ticks, 1) % (5 * FPS) == 0) {
-		fprintf(stderr, "mapple-captured: preview: %u frames queued, %u let go by CoreAnimation\n",
-		    atomic_load(&queued), atomic_load(&released));
+		fprintf(stderr, "mapple-captured: preview: %u frames queued, %u let go by CoreAnimation, %u into one still in use; "
+		    "longest tick %llu us\n", atomic_load(&queued), atomic_load(&released), atomic_load(&in_use),
+		    longest_tick / 1000);
+		longest_tick = 0;
 	}
-	for (int i = 0; i < PREVIEW_BUFFERS; i++) {
-		bool idle = false;
+	if ((i = preview_buffer(s, &used)) >= 0) {
+		IOSurfaceRef surface = s->surface[i];
 
-		if (atomic_compare_exchange_strong(&s->shown[i], &idle, true)) {
-			IOSurfaceRef surface = s->surface[i];
-
-			IOSurfaceLock(surface, 0, NULL);
-			fill_frame(IOSurfaceGetBaseAddress(surface), IOSurfaceGetBytesPerRow(surface), PREVIEW_W, PREVIEW_H,
-			    cam.frame++);
-			IOSurfaceUnlock(surface, 0, NULL);
-			cm.preview_insert(s->queue, s->image[i], image_shown, &s->shown[i]);
-			atomic_fetch_add(&queued, 1);
-			return;
-		}
+		atomic_store(&s->shown[i], true);
+		fill_frame(IOSurfaceGetBaseAddress(surface), IOSurfaceGetBytesPerRow(surface), PREVIEW_W, PREVIEW_H,
+		    cam.frame++);
+		IOSurfaceUnlock(surface, 0, NULL);
+		cm.preview_insert(s->queue, s->image[i], image_shown, &s->shown[i]);
+		atomic_fetch_add(&queued, 1);
+		atomic_fetch_add(&in_use, used);
+		s->last = i;
 	}
+	took = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start;
+	longest_tick = took > longest_tick ? took : longest_tick;
 }
 
 static void
@@ -667,8 +699,8 @@ preview_start(struct session *s)
 		}
 	}
 	preview_announce(s);
-	s->timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, cam.queue);
-	dispatch_source_set_timer(s->timer, DISPATCH_TIME_NOW, NSEC_PER_SEC / FPS, NSEC_PER_SEC / FPS / 10);
+	s->timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, DISPATCH_TIMER_STRICT, cam.queue);
+	dispatch_source_set_timer(s->timer, DISPATCH_TIME_NOW, NSEC_PER_SEC / FPS, NSEC_PER_MSEC);
 	dispatch_source_set_event_handler(s->timer, ^{ preview_tick(s); });
 	dispatch_resume(s->timer);
 }
@@ -1308,7 +1340,8 @@ main(void)
 	torch = CFDataCreateMutable(NULL, 0);
 	torch_queue = dispatch_queue_create("mapple-captured.torch", DISPATCH_QUEUE_SERIAL);
 	cam.source = CFDataCreateMutable(NULL, 0);
-	cam.queue = dispatch_queue_create("mapple-captured.camera", DISPATCH_QUEUE_SERIAL);
+	cam.queue = dispatch_queue_create("mapple-captured.camera",
+	    dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
 	cam.photos = dispatch_queue_create("mapple-captured.photos", DISPATCH_QUEUE_SERIAL);
 	for (size_t i = 0; i < sizeof(servers) / sizeof(servers[0]); i++) {
 		void *server = NULL;

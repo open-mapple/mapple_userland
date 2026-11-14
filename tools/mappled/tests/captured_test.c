@@ -208,6 +208,8 @@ fake_prepared_decode(__unused xpc_object_t x, int64_t *settings)
 
 static int queue_open, queue_closed, inserted;
 static uint64_t last_image;
+static IOSurfaceRef registered[16];
+static int nregistered;
 
 static void *
 fake_preview_open(int w, int h, uint32_t *slot)
@@ -222,23 +224,31 @@ static uint64_t
 fake_preview_register(__unused void *q, IOSurfaceRef s)
 {
 	assert(IOSurfaceGetWidth(s) == PREVIEW_W && IOSurfaceGetPixelFormat(s) == FOURCC("BGRA"));
-	return 1000 + (uint64_t)queue_open * 10 + (uint64_t)inserted;
+	assert(nregistered < 16);
+	registered[nregistered] = s;
+	return 1000 + (uint64_t)nregistered++;
 }
 
-/* CoreAnimation's side: a queued image is let go only when the producer collects, and the newest stays shown. */
+/*
+ * CoreAnimation's side: a queued image is let go only when the producer collects, and the newest stays shown. The
+ * render server counts what it was given as in use, and one collect longer than it holds the image (a GPU job still
+ * reading it).
+ */
 static struct {
 	uint64_t image;
 	image_released done;
 	void *info;
 } pending[8];
-static int npending, collected;
+static int npending, collected, nlagging;
+static IOSurfaceRef lagging[8];
 
 static void
 fake_preview_insert(__unused void *q, uint64_t image, image_released done, void *info)
 {
-	assert(npending < 8);
+	assert(npending < 8 && image >= 1000 && image < 1000 + (uint64_t)nregistered);
 	inserted++;
 	last_image = image;
+	IOSurfaceIncrementUseCount(registered[image - 1000]);
 	pending[npending++] = (typeof(pending[0])){ image, done, info };
 }
 
@@ -246,13 +256,37 @@ static void
 fake_preview_collect(void *q)
 {
 	collected++;
+	for (int i = 0; i < nlagging; i++) {
+		IOSurfaceDecrementUseCount(lagging[i]);
+	}
+	nlagging = 0;
 	for (int i = 0; i + 1 < npending; i++) {
 		pending[i].done(q, pending[i].image, pending[i].info);
+		lagging[nlagging++] = registered[pending[i].image - 1000];
 	}
 	if (npending > 1) {
 		pending[0] = pending[npending - 1];
 		npending = 1;
 	}
+}
+
+/* The frame source, checked: never a buffer CoreAnimation still shows, nor one in use unless all are. */
+static bool in_use_allowed;
+static int preview_fills;
+
+static void
+checked_fill(uint8_t *bgra, size_t stride, int w, int h, uint64_t frame)
+{
+	for (int i = 0; i < nregistered; i++) {
+		if (IOSurfaceGetBaseAddress(registered[i]) == bgra) {
+			for (int p = 0; p < npending; p++) {
+				assert(pending[p].image != 1000 + (uint64_t)i);
+			}
+			assert(in_use_allowed || !IOSurfaceIsInUse(registered[i]));
+			preview_fills++;
+		}
+	}
+	pattern(bgra, stride, w, h, frame);
 }
 
 static void
@@ -425,6 +459,54 @@ source_tests(void)
 	capturesource_noreply(NULL, request(OP('n', 'o', 't', 'f')));
 }
 
+/* The test pattern as first written, a pixel at a time. */
+static void
+reference_pattern(uint8_t *bgra, size_t stride, int w, int h, uint64_t frame)
+{
+	static const uint32_t bars[8] = { 0xffffff, 0xffff00, 0x00ffff, 0x00ff00, 0xff00ff, 0xff0000, 0x0000ff, 0x000000 };
+	int side = h / 6, span = w - side, pos = (int)(frame * (uint64_t)w / 90 % (uint64_t)(2 * span));
+	int bx = pos < span ? pos : 2 * span - pos, by = (h - side) / 2, bit = w / 20, base = h - 2 * bit;
+
+	for (int y = 0; y < h; y++) {
+		uint32_t *row = (uint32_t *)(bgra + (size_t)y * stride);
+
+		for (int x = 0; x < w; x++) {
+			uint32_t rgb = bars[x * 8 / w];
+
+			if (x >= bx && x < bx + side && y >= by && y < by + side) {
+				rgb = 0x808080;
+			} else if (y >= base && y < base + bit && x / bit >= 2 && x / bit < 18 && x % bit < bit - 2) {
+				rgb = (frame >> (17 - x / bit) & 1) ? 0xffffff : 0x202020;
+			}
+			row[x] = 0xff000000 | rgb;
+		}
+	}
+}
+
+/* The pattern drawn a row at a time is the same picture, at the preview's and the photo's sizes and an odd one. */
+static void
+pattern_tests(void)
+{
+	static const int sizes[][2] = { { PREVIEW_W, PREVIEW_H }, { PHOTO_W, PHOTO_H }, { 641, 479 } };
+	static const uint64_t frames[] = { 0, 1, 45, 89, 90, 1000, 65535 };
+
+	for (size_t z = 0; z < sizeof(sizes) / sizeof(sizes[0]); z++) {
+		int w = sizes[z][0], h = sizes[z][1];
+		size_t stride = (size_t)w * 4 + 64;
+		uint8_t *a = malloc(stride * (size_t)h), *b = malloc(stride * (size_t)h);
+
+		for (size_t f = 0; f < sizeof(frames) / sizeof(frames[0]); f++) {
+			reference_pattern(a, stride, w, h, frames[f]);
+			pattern(b, stride, w, h, frames[f]);
+			for (int y = 0; y < h; y++) {
+				assert(memcmp(a + (size_t)y * stride, b + (size_t)y * stride, (size_t)w * 4) == 0);
+			}
+		}
+		free(a);
+		free(b);
+	}
+}
+
 static void
 session_tests(void)
 {
@@ -472,6 +554,37 @@ session_tests(void)
 	usleep(400000);
 	dispatch_sync(cam.queue, ^{});
 	assert(inserted > PREVIEW_BUFFERS && collected >= inserted);     /* frames keep coming past the buffer count */
+
+	/* a frame every tick, 30 a second */
+	__block unsigned t0, q0;
+	dispatch_sync(cam.queue, ^{ t0 = atomic_load(&ticks); q0 = atomic_load(&queued); });
+	usleep(1000000);
+	dispatch_sync(cam.queue, ^{
+		unsigned t = atomic_load(&ticks) - t0;
+
+		assert(t >= FPS - 4 && t <= FPS + 2 && atomic_load(&queued) - q0 == t);
+	});
+
+	/* buffers the render server still counts in use are passed over; if all are, a let-go one is used anyway */
+	dispatch_sync(cam.queue, ^{ IOSurfaceIncrementUseCount(s->surface[0]); IOSurfaceIncrementUseCount(s->surface[1]); });
+	q0 = preview_fills;
+	usleep(300000);
+	dispatch_sync(cam.queue, ^{
+		assert(preview_fills > (int)q0 + 5 && atomic_load(&in_use) == 0);
+		in_use_allowed = true;
+		for (int i = 2; i < PREVIEW_BUFFERS; i++) {
+			IOSurfaceIncrementUseCount(s->surface[i]);
+		}
+	});
+	q0 = preview_fills;
+	usleep(300000);
+	dispatch_sync(cam.queue, ^{
+		assert(preview_fills > (int)q0 + 5 && atomic_load(&in_use) > 0);
+		in_use_allowed = false;
+		for (int i = 0; i < PREVIEW_BUFFERS; i++) {
+			IOSurfaceDecrementUseCount(s->surface[i]);
+		}
+	});
 	IOSurfaceLock(s->surface[0], kIOSurfaceLockReadOnly, NULL);
 	uint32_t *px = IOSurfaceGetBaseAddress(s->surface[0]);
 	assert(px[0] == 0xffffffff && px[PREVIEW_W - 1] == 0xff000000);   /* white bar on the left, black on the right */
@@ -590,12 +703,14 @@ main(void)
 	cm.preview_insert = fake_preview_insert;
 	cm.preview_collect = fake_preview_collect;
 	cm.preview_close = fake_preview_close;
+	fill_frame = checked_fill;
 	torch = CFDataCreateMutable(NULL, 0);
 	torch_queue = dispatch_queue_create("test", DISPATCH_QUEUE_SERIAL);
 	cam.source = CFDataCreateMutable(NULL, 0);
 	cam.queue = dispatch_queue_create("test.camera", DISPATCH_QUEUE_SERIAL);
 	cam.photos = dispatch_queue_create("test.photos", DISPATCH_QUEUE_SERIAL);
 
+	pattern_tests();
 	torch_tests();
 	source_tests();
 	session_tests();
