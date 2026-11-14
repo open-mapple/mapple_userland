@@ -165,15 +165,27 @@ fake_format_encode(CFDictionaryRef format)
 	return xpc_dictionary_create(NULL, NULL, 0);
 }
 
-static int
-fake_config_decode(xpc_object_t x, struct config *c)
+/* A configuration as FigCaptureSessionConfiguration encodes it: Camera.app's photo sink, and a preview sink if asked. */
+static xpc_object_t
+configuration(int64_t id, bool preview)
 {
-	if (!x) {
-		return -1;
+	xpc_object_t c = xpc_dictionary_create(NULL, NULL, 0), list = xpc_array_create(NULL, 0);
+	const char *sinks[][2] = { { "FigCaptureIrisSinkConfiguration", "PhotoSink" },
+	    { "FigCaptureVideoPreviewSinkConfiguration", "PreviewSink" } };
+
+	for (int i = 0; i < (preview ? 2 : 1); i++) {
+		xpc_object_t conn = xpc_dictionary_create(NULL, NULL, 0), sink = xpc_dictionary_create(NULL, NULL, 0);
+
+		xpc_dictionary_set_string(sink, "class", sinks[i][0]);
+		xpc_dictionary_set_string(sink, "sinkID", sinks[i][1]);
+		xpc_dictionary_set_string(conn, "class", "FigCaptureConnectionConfiguration");
+		xpc_dictionary_set_int64(conn, "sourceIndex", 0);
+		xpc_dictionary_set_value(conn, "sink", sink);
+		xpc_array_append_value(list, conn);
 	}
-	c->id = xpc_int64_get_value(x);
-	c->preview = CFSTR("PreviewSink");
-	return 0;
+	xpc_dictionary_set_int64(c, "configurationID", id);
+	xpc_dictionary_set_value(c, "connections", list);
+	return c;
 }
 
 static int
@@ -372,6 +384,8 @@ source_tests(void)
 	c = request(OP('.', 'c', 'p', 'y'));
 	xpc_dictionary_set_string(c, ".PropertyName", "ActiveFormat");
 	assert(ask(capturesource_reply, c, &r) == 0 && xpc_dictionary_get_value(r, ".Value") == cam.format);
+	xpc_dictionary_set_string(c, ".PropertyName", "SourceToken");
+	assert(ask(capturesource_reply, c, &r) == 0 && xpc_dictionary_get_int64(r, ".Value") == 1);
 	xpc_dictionary_set_string(c, ".PropertyName", "VideoZoomFactor");
 	assert(ask(capturesource_reply, c, &r) == NO_PROPERTY);
 	xpc_object_t s = request(OP('.', 's', 'e', 't'));
@@ -400,10 +414,19 @@ session_tests(void)
 	assert(id == (uint64_t)associated && served[id].serializer == (void *)session_serialize);
 	s = served[id].refcon;
 
+	/* without a preview sink (run 38's first configurations): running, no preview */
+	nposted = 0;
+	m = on(OP('c', 'n', 'f', 'g'), id);
+	xpc_dictionary_set_value(m, ".payload", configuration(4, false));
+	capturesession_noreply(NULL, m);
+	capturesession_noreply(NULL, on(OP('b', 'r', 'u', 'n'), id));
+	assert(find("DidStartRunning", 0) > 0 && find("ImageQueueUpdated", 0) < 0 && queue_open == 0 && !s->config.preview);
+	capturesession_noreply(NULL, on(OP('e', 'r', 'u', 'n'), id));
+
 	/* the configuration: committed with its ID and the host clock */
 	nposted = 0;
 	m = on(OP('c', 'n', 'f', 'g'), id);
-	xpc_dictionary_set_value(m, ".payload", xpc_int64_create(5));
+	xpc_dictionary_set_value(m, ".payload", configuration(5, true));
 	capturesession_noreply(NULL, m);
 	assert(nposted == 1 && strcmp(posted[0], "ConfigurationCommitted") == 0);
 	assert(number(payloads[0], "ConfigurationID") == 5 && number(payloads[0], "MasterClockType") == 1);
@@ -526,7 +549,6 @@ main(void)
 	cm.torch_get = fake_get;
 	cm.torch_set = fake_set;
 	cm.format_encode = fake_format_encode;
-	cm.config_decode = fake_config_decode;
 	cm.still_decode = fake_still_decode;
 	cm.prepared_decode = fake_prepared_decode;
 	cm.preview_open = fake_preview_open;

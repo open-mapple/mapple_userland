@@ -4,9 +4,8 @@
  * the kernel's sysctl kern.mapple_torch (0 off, 1-3 = 25, 37.5, 50 mA; 0x100 while overheated). One back camera
  * showing a test pattern: the capture source lists it, a capture session previews it into a CAImageQueue and takes
  * JPEG photos of it; recording, brackets and moment capture are refused, the deferred container answers errors.
- * The protocol is CoreMedia's own server (FigXPCServerStart and friends); formats, session configurations and photo
- * settings are CMCapture's own classes. All of it is looked up at run time. Started by launchd on the first request;
- * never exits.
+ * The protocol is CoreMedia's own server (FigXPCServerStart and friends); formats and photo settings are CMCapture's
+ * own classes. All of it is looked up at run time. Started by launchd on the first request; never exits.
  */
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreGraphics/CoreGraphics.h>
@@ -70,7 +69,6 @@ static struct {
 	int (*torch_set)(int);
 	/* CMCapture's classes */
 	xpc_object_t (*format_encode)(CFDictionaryRef);
-	int (*config_decode)(xpc_object_t, struct config *);
 	int (*still_decode)(CFDataRef, struct still *);
 	int (*prepared_decode)(xpc_object_t, int64_t *);
 	/* CoreAnimation's image queue in a render server slot */
@@ -426,6 +424,9 @@ copy_property(CFDictionaryRef props, xpc_object_t msg, xpc_object_t reply)
 
 		if (props == cam.properties && CFEqual(name, CFSTR("ActiveFormat"))) {
 			xpc_dictionary_set_value(reply, ".Value", cam.format);
+			err = 0;
+		} else if (props == cam.properties && CFEqual(name, CFSTR("SourceToken"))) {
+			xpc_dictionary_set_int64(reply, ".Value", 1);   /* names the source in session configurations */
 			err = 0;
 		} else if (v) {
 			err = cm.set_object(reply, ".Value", v);
@@ -867,6 +868,41 @@ session_of(xpc_connection_t conn, xpc_object_t msg)
 	return refcon;
 }
 
+/* The configuration as FigCaptureSessionConfiguration encodes it. Not through that class: its sources look themselves
+ * up by token in CMCapture's own source server, which does not run here, and without them it drops every connection. */
+static int
+config_parse(xpc_object_t x, struct config *c)
+{
+	bool valid = x && xpc_get_type(x) == XPC_TYPE_DICTIONARY;
+	xpc_object_t connections = valid ? xpc_dictionary_get_value(x, "connections") : NULL;
+
+	if (!connections || xpc_get_type(connections) != XPC_TYPE_ARRAY) {
+		return -1;
+	}
+	c->id = xpc_dictionary_get_int64(x, "configurationID");
+	fprintf(stderr, "mapple-captured:   configuration %lld, %zu connection(s)\n", (long long)c->id,
+	    xpc_array_get_count(connections));
+	xpc_array_apply(connections, ^bool (__unused size_t i, xpc_object_t connection) {
+		xpc_object_t sink = xpc_get_type(connection) == XPC_TYPE_DICTIONARY ?
+		    xpc_dictionary_get_value(connection, "sink") : NULL;
+		const char *class = sink ? xpc_dictionary_get_string(sink, "class") : NULL;
+		CFStringRef sink_id = NULL;
+		char what[128];
+
+		if (!class || cm.copy_string(sink, "sinkID", &sink_id) != 0 || !sink_id) {
+			return true;
+		}
+		snprintf(what, sizeof(what), "  sink %s", class);
+		logf_cf(what, sink_id);
+		if (!c->preview && strcmp(class, "FigCaptureVideoPreviewSinkConfiguration") == 0) {
+			c->preview = CFRetain(sink_id);
+		}
+		CFRelease(sink_id);
+		return true;
+	});
+	return 0;
+}
+
 static OSStatus
 capturesession_reply(xpc_connection_t conn, xpc_object_t msg, xpc_object_t reply)
 {
@@ -924,7 +960,7 @@ capturesession_noreply(xpc_connection_t conn, xpc_object_t msg)
 	switch (op) {
 	case OP('c', 'n', 'f', 'g'): {
 		struct config c = { 0 };
-		int err = cm.config_decode(xpc_dictionary_get_value(msg, ".payload"), &c);
+		int err = config_parse(xpc_dictionary_get_value(msg, ".payload"), &c);
 
 		dispatch_sync(cam.queue, ^{
 			bool moved = s->running && !(c.preview && s->config.preview && CFEqual(c.preview, s->config.preview));
@@ -1065,28 +1101,6 @@ format_encode(CFDictionaryRef format)
 
 	send(f, "release");
 	return x;
-}
-
-static int
-config_decode(xpc_object_t encoding, struct config *c)
-{
-	void *pool = objc_autoreleasePoolPush();
-	id config = encoding ? send1(alloc("FigCaptureSessionConfiguration"), "initWithXPCEncoding:", encoding) : NULL;
-	CFArrayRef connections = (CFArrayRef)send(config, "connectionConfigurations");
-
-	if (config) {
-		logf_cf("configuration", (CFTypeRef)send(config, "description"));
-		c->id = send_ll(config, "configurationID");
-	}
-	for (CFIndex i = 0; connections && i < CFArrayGetCount(connections) && !c->preview; i++) {
-		id sink = send((id)CFArrayGetValueAtIndex(connections, i), "videoPreviewSinkConfiguration");
-		CFTypeRef sink_id = (CFTypeRef)send(sink, "sinkID");
-
-		c->preview = sink_id ? CFRetain(sink_id) : NULL;
-	}
-	send(config, "release");
-	objc_autoreleasePoolPop(pool);
-	return config ? 0 : -1;
 }
 
 static int
@@ -1257,7 +1271,6 @@ main(void)
 		fprintf(stderr, "mapple-captured: no CMCapture: %s\n", dlerror());
 	}
 	cm.format_encode = format_encode;
-	cm.config_decode = config_decode;
 	cm.still_decode = still_decode;
 	cm.prepared_decode = prepared_decode;
 	cm.preview_open = preview_open;
