@@ -51,8 +51,9 @@ build "$DIR/bootrec" "$HERE/bootrec.c"
 # mstat (load, processes, memory: tools/mappled/mstat.c), next to mappled
 build "$DIR/mstat" "$HERE/mstat.c" "$HERE/mstat_log.m" "$HERE/mstat_stack.c" -fobjc-arc -framework Foundation -framework OSLog -framework CoreFoundation
 codesign -s - -f --entitlements "$HERE/mstat.entitlements" "$DIR/mstat"   # mstat log: the system log store; mstat stack: stackshots
-# mapple-captured (the torch and "no cameras" for iOS's capture clients: mapple-captured.c), next to mappled
-build "$DIR/mapple-captured" "$HERE/mapple-captured.c" -framework CoreFoundation
+# mapple-captured (the torch and a test-pattern camera for iOS's capture clients: mapple-captured.c), next to mappled
+build "$DIR/mapple-captured" "$HERE/mapple-captured.c" -framework CoreFoundation -framework CoreGraphics \
+  -framework CoreMedia -framework ImageIO -framework IOSurface -lobjc
 # mapple-usbd (PTP + usbmux of the std USB persona, docs/VIVA-USB-PERSONA.md), next to mappled
 build "$DIR/mapple-usbd" "$HERE/mapple-usbd.c"
 file "$DIR/mapple-usbd"
