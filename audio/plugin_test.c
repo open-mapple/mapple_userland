@@ -117,6 +117,39 @@ main(void)
 		CHECK(n == 0);
 		CHECK((*d)->StopIO(d, OBJECT_CODEC, 1) == 0 && (*d)->StopIO(d, OBJECT_SPEAKER, 1) == 0);
 	}
+
+	/* the earpiece: the codec's mute control on output element 3, settable; the route follows the sound */
+	{
+		AudioObjectPropertyAddress mute = { kAudioBooleanControlPropertyValue, kAudioObjectPropertyScopeGlobal, 0 };
+		AudioObjectID controls[4];
+		UInt32 cls = 0, element = 0, value = 1, zero = 0;
+		int16_t samples[3 * 512] = { 0 }, silence[2 * 512] = { 0 }, tone[2 * 512];
+		AudioServerPlugInIOCycleInfo cycle = { 0 };
+
+		n = get(d, OBJECT_CODEC, kAudioObjectPropertyControlList, kAudioObjectPropertyScopeGlobal, 0, NULL, sizeof(controls), controls);
+		CHECK(n == 2 * sizeof(AudioObjectID) && controls[1] == OBJECT_RECEIVER_MUTE);
+		get(d, OBJECT_RECEIVER_MUTE, kAudioObjectPropertyClass, kAudioObjectPropertyScopeGlobal, 0, NULL, sizeof(cls), &cls);
+		get(d, OBJECT_RECEIVER_MUTE, kAudioControlPropertyElement, kAudioObjectPropertyScopeGlobal, 0, NULL, sizeof(element), &element);
+		CHECK(cls == kAudioMuteControlClassID && element == 3);
+		CHECK((*d)->SetPropertyData(d, OBJECT_RECEIVER_MUTE, 0, &mute, 0, NULL, sizeof(zero), &zero) == 0);
+		get(d, OBJECT_RECEIVER_MUTE, kAudioBooleanControlPropertyValue, kAudioObjectPropertyScopeGlobal, 0, NULL, sizeof(value), &value);
+		CHECK(value == 0);
+		CHECK(get(d, OBJECT_CODEC_OUTPUT, kAudioStreamPropertyVirtualFormat, kAudioObjectPropertyScopeGlobal, 0, NULL, sizeof(f), &f) == sizeof(f));
+		CHECK(f.mChannelsPerFrame == 3);
+		for (unsigned i = 0; i < 2 * 512; i++) {
+			tone[i] = (int16_t)(i & 1 ? 1000 : -1000);
+		}
+		CHECK(route == MAPPLE_AUDIO_ROUTE_SPEAKER);
+		(*d)->DoIOOperation(d, OBJECT_CODEC, OBJECT_CODEC_OUTPUT, 1, kAudioServerPlugInIOOperationWriteMix, 512, &cycle, samples, NULL);
+		CHECK(route == MAPPLE_AUDIO_ROUTE_SPEAKER);         /* silence moves nothing */
+		samples[3 * 7 + 2] = 500;
+		(*d)->DoIOOperation(d, OBJECT_CODEC, OBJECT_CODEC_OUTPUT, 1, kAudioServerPlugInIOOperationWriteMix, 512, &cycle, samples, NULL);
+		CHECK(route == MAPPLE_AUDIO_ROUTE_RECEIVER);
+		(*d)->DoIOOperation(d, OBJECT_SPEAKER, OBJECT_SPEAKER_OUTPUT, 1, kAudioServerPlugInIOOperationWriteMix, 512, &cycle, silence, NULL);
+		CHECK(route == MAPPLE_AUDIO_ROUTE_RECEIVER);
+		(*d)->DoIOOperation(d, OBJECT_SPEAKER, OBJECT_SPEAKER_OUTPUT, 1, kAudioServerPlugInIOOperationWriteMix, 512, &cycle, tone, NULL);
+		CHECK(route == MAPPLE_AUDIO_ROUTE_SPEAKER);
+	}
 	printf("%s\n", failures ? "plugin_test: FAILED" : "plugin_test: ok");
 	return failures != 0;
 }

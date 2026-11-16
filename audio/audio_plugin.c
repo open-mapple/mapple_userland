@@ -29,7 +29,8 @@
  *   "Codec"     one input of one channel: on an iPhone, the audio codec that the built-in
  *               microphones are on, of which the virtual audio device makes the built-in microphone
  *               port; its samples come from the kernel, /dev/mapple-mic (silence until the phone's
- *               microphone has a driver), which listens only while this input runs (see codec_read())
+ *               microphone has a driver), which listens only while this input runs (see codec_read());
+ *               and an output of three channels, the earpiece (see receiver_write())
  *
  * CoreAudio's own null device ("Null_Device", described in the framework's Info.plist, playing
  * into nowhere) stays as it is: it is the only device the virtual audio device takes while it
@@ -181,6 +182,8 @@ enum {
 	kAudioLevelControlPropertyScalarValue = 'lcsv', kAudioLevelControlPropertyDecibelValue = 'lcdv',
 	kAudioLevelControlPropertyDecibelRange = 'lcdr', kAudioLevelControlPropertyConvertScalarToDecibels = 'lcsd',
 	kAudioLevelControlPropertyConvertDecibelsToScalar = 'lcds',
+	kAudioBooleanControlClassID = 'togl', kAudioMuteControlClassID = 'mute', kAudioBooleanControlPropertyValue = 'bcvl',
+	kAudioStreamTerminalTypeReceiverSpeaker = 'rspk',
 };
 
 /* ---- the devices ---------------------------------------------------------------------------------- */
@@ -197,7 +200,9 @@ enum {
 	OBJECT_CODEC, OBJECT_CODEC_INPUT,
 	OBJECT_SPEAKER_VOLUME,          /* the speaker output's volume control */
 	OBJECT_CODEC_SOURCE,            /* the codec input's data source control: its microphones */
-	OBJECT_LAST = OBJECT_CODEC_SOURCE
+	OBJECT_CODEC_OUTPUT,            /* the codec's output: the earpiece */
+	OBJECT_RECEIVER_MUTE,           /* its mute control on element 3 */
+	OBJECT_LAST = OBJECT_RECEIVER_MUTE
 };
 
 #define VOLUME_RANGE_DB         48.0    /* from the loudest the kernel allows down to the quietest step above 0 */
@@ -218,7 +223,8 @@ static struct device devices[] = {
 	  .output_channels = MAPPLE_AUDIO_CHANNELS, .input_channels = 2 },
 	{ .object = OBJECT_HAWKING, .uid = CFSTR("Hawking"), .input = OBJECT_HAWKING_INPUT, .input_channels = 1 },
 	{ .object = OBJECT_ACTUATOR, .uid = CFSTR("Actuator"), .output = OBJECT_ACTUATOR_OUTPUT, .output_channels = 1 },
-	{ .object = OBJECT_CODEC, .uid = CFSTR("Codec"), .input = OBJECT_CODEC_INPUT, .input_channels = 1 },
+	{ .object = OBJECT_CODEC, .uid = CFSTR("Codec"), .output = OBJECT_CODEC_OUTPUT, .input = OBJECT_CODEC_INPUT,
+	  .output_channels = 3, .input_channels = 1 },
 };
 #define DEVICES                 (sizeof(devices) / sizeof(devices[0]))
 
@@ -231,6 +237,12 @@ static struct device devices[] = {
  * is one microphone here, at the bottom: 'imic', the iPhone's internal (bottom) one.
  */
 #define MIC_SOURCE              'imic'
+/*
+ * The earpiece: VirtualAudio (Device_Codec_Aspen) makes the receiver port of a codec that has a mute control on
+ * output element 3 (element 2's volume would be a line-out, 4's mute a second speaker, 5's a hearing-aid coil). The
+ * HAL answers kAudioDevicePropertyMute from the control.
+ */
+#define RECEIVER_ELEMENT        3
 #define MANUFACTURER            CFSTR("Open Mapple")
 /* how often a device says where its clock is, in frames: also the largest I/O buffer the HAL will use */
 #define TIMESTAMP_PERIOD        16384
@@ -242,6 +254,8 @@ static Float64 ticks_per_frame;
 static UInt64 written, refused;         /* frames since the speaker's I/O started */
 static Boolean inactive[OBJECT_LAST + 1];       /* streams the HAL has switched off */
 static Float32 volume = 1.0f;           /* the speaker's volume control, 0 to 1 (Darwin sets it once it routes there) */
+static UInt32 receiver_muted = 1;       /* the earpiece's mute control */
+static uint32_t route = MAPPLE_AUDIO_ROUTE_SPEAKER;    /* which device's sound goes to the kernel, and where it plays */
 
 static void
 say(const char *format, ...)
@@ -482,6 +496,32 @@ property(AudioObjectID object, const AudioObjectPropertyAddress *address, UInt32
 		}
 		return v;
 	}
+	if (object == OBJECT_RECEIVER_MUTE) {
+		switch (selector) {
+		case kAudioObjectPropertyBaseClass:
+			WORD(kAudioBooleanControlClassID);
+			break;
+		case kAudioObjectPropertyClass:
+			WORD(kAudioMuteControlClassID);
+			break;
+		case kAudioObjectPropertyOwner:
+			WORD(OBJECT_CODEC);
+			break;
+		case kAudioObjectPropertyOwnedObjects:
+			v.empty = true;
+			break;
+		case kAudioControlPropertyScope:
+			WORD(kAudioObjectPropertyScopeOutput);
+			break;
+		case kAudioControlPropertyElement:
+			WORD(RECEIVER_ELEMENT);
+			break;
+		case kAudioBooleanControlPropertyValue:
+			WORD(receiver_muted);
+			break;
+		}
+		return v;
+	}
 	if (object != OBJECT_PLUGIN && d == NULL) {
 		return v;
 	}
@@ -553,7 +593,7 @@ property(AudioObjectID object, const AudioObjectPropertyAddress *address, UInt32
 			break;
 		case kAudioDevicePropertyDeviceCanBeDefaultDevice:
 		case kAudioDevicePropertyDeviceCanBeDefaultSystemDevice:
-			WORD(d->output != 0);
+			WORD(d->output != 0 && d->object != OBJECT_CODEC);
 			break;
 		case kAudioDevicePropertyDeviceIsRunning:
 			WORD(d->running != 0);
@@ -573,6 +613,9 @@ property(AudioObjectID object, const AudioObjectPropertyAddress *address, UInt32
 			if (selector == kAudioObjectPropertyOwnedObjects && d->object == OBJECT_CODEC && scope != kAudioObjectPropertyScopeOutput) {
 				LIST(OBJECT_CODEC_SOURCE);
 			}
+			if (selector == kAudioObjectPropertyOwnedObjects && d->object == OBJECT_CODEC && scope != kAudioObjectPropertyScopeInput) {
+				LIST(OBJECT_RECEIVER_MUTE);
+			}
 			v.empty = v.size == 0;
 			break;
 		case kAudioObjectPropertyControlList:
@@ -581,6 +624,7 @@ property(AudioObjectID object, const AudioObjectPropertyAddress *address, UInt32
 			}
 			if (d->object == OBJECT_CODEC) {
 				LIST(OBJECT_CODEC_SOURCE);
+				LIST(OBJECT_RECEIVER_MUTE);
 			}
 			v.empty = v.size == 0;
 			break;
@@ -610,7 +654,8 @@ property(AudioObjectID object, const AudioObjectPropertyAddress *address, UInt32
 			WORD(object == d->input);
 			break;
 		case kAudioStreamPropertyTerminalType:
-			WORD(object == d->input ? kAudioStreamTerminalTypeMicrophone : kAudioStreamTerminalTypeSpeaker);
+			WORD(object == d->input ? kAudioStreamTerminalTypeMicrophone : object == OBJECT_CODEC_OUTPUT ?
+			    kAudioStreamTerminalTypeReceiverSpeaker : kAudioStreamTerminalTypeSpeaker);
 			break;
 		case kAudioStreamPropertyStartingChannel:
 			WORD(1);
@@ -700,6 +745,8 @@ is_property_settable(AudioServerPlugInDriverRef driver, AudioObjectID object, pi
 		    address->mSelector == kAudioLevelControlPropertyDecibelValue;
 	} else if (object == OBJECT_CODEC_SOURCE) {
 		*settable = address->mSelector == kAudioSelectorControlPropertyCurrentItem;
+	} else if (object == OBJECT_RECEIVER_MUTE) {
+		*settable = address->mSelector == kAudioBooleanControlPropertyValue;
 	} else if (object == OBJECT_PLUGIN) {
 		*settable = false;
 	} else if (object == d->object) {
@@ -803,6 +850,22 @@ set_property_data(AudioServerPlugInDriverRef driver, AudioObjectID object, pid_t
 		return size == sizeof(UInt32) ? (*(const UInt32 *)data == MIC_SOURCE ? 0 : kAudioHardwareIllegalOperationError) :
 		       kAudioHardwareBadPropertySizeError;
 	}
+	if (object == OBJECT_RECEIVER_MUTE) {
+		/* only said: the route follows the sound (receiver_write()) */
+		AudioObjectPropertyAddress changed = { kAudioBooleanControlPropertyValue, kAudioObjectPropertyScopeGlobal, 0 };
+
+		if (size != sizeof(UInt32)) {
+			return kAudioHardwareBadPropertySizeError;
+		}
+		pthread_mutex_lock(&lock);
+		receiver_muted = *(const UInt32 *)data != 0;
+		pthread_mutex_unlock(&lock);
+		say("mapple: audio: the earpiece %s\n", receiver_muted ? "muted" : "unmuted");
+		if (host != NULL) {
+			host->PropertiesChanged(host, OBJECT_RECEIVER_MUTE, 1, &changed);
+		}
+		return 0;
+	}
 	if (address->mSelector == kAudioStreamPropertyIsActive) {
 		if (size != sizeof(UInt32)) {
 			return kAudioHardwareBadPropertySizeError;
@@ -892,7 +955,7 @@ start_io(__unused AudioServerPlugInDriverRef driver, AudioObjectID object, __unu
 	if (d->running++ == 0) {
 		d->anchor = mach_absolute_time();
 		d->periods = 0;
-		if (d->output != 0) {
+		if (d->output != 0 && d->object != OBJECT_CODEC) {
 			written = refused = 0;
 			say("mapple: audio: playing\n");
 		}
@@ -998,6 +1061,68 @@ actuator_write(const int16_t *samples, UInt32 frames)
 	}
 }
 
+/*
+ * Speaker or earpiece: VirtualAudio plays on one of the two devices at a time, so the sound goes where it last came from;
+ * the kernel is told when that changes (it switches the codec between line-out and amplifier, and the earpiece), and the
+ * other device's samples are dropped. Two I/O threads (one per device) may get here. Both devices carrying sound at once
+ * would flap the route (then it should follow the port VirtualAudio picked instead).
+ */
+static void
+route_to(uint32_t to)
+{
+	if (__atomic_exchange_n(&route, to, __ATOMIC_RELAXED) != to) {
+		if (sink >= 0 && ioctl(sink, MAPPLE_AUDIO_SET_ROUTE, &to) < 0) {
+			say("mapple: audio: the route could not be given to the kernel (%s)\n", strerror(errno));
+		}
+		say("mapple: audio: the sound goes to the %s\n", to == MAPPLE_AUDIO_ROUTE_RECEIVER ? "earpiece" : "speaker");
+	}
+}
+
+static bool
+sound_in(const int16_t *samples, size_t count)
+{
+	for (size_t i = 0; i < count; i++) {
+		if (samples[i] != 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/*
+ * The earpiece's samples: the codec's output has three channels (its mute is on element 3). Which of them VirtualAudio
+ * fills is not known yet: channel 3 if it has anything, else the mix of 1 and 2; said the first times, then to both
+ * channels of the kernel's frames (the earpiece plays the left).
+ */
+static unsigned receiver_said;
+
+static void
+receiver_write(const int16_t *samples, UInt32 frames)
+{
+	static int16_t stereo[2 * TIMESTAMP_PERIOD];
+	bool third = false;
+
+	frames = frames > TIMESTAMP_PERIOD ? TIMESTAMP_PERIOD : frames;
+	for (UInt32 i = 0; i < frames && !third; i++) {
+		third = samples[3 * i + 2] != 0;
+	}
+	for (UInt32 i = 0; i < frames; i++) {
+		int16_t v = third ? samples[3 * i + 2] : (int16_t)(((int)samples[3 * i] + samples[3 * i + 1]) / 2);
+
+		stereo[2 * i] = stereo[2 * i + 1] = v;
+	}
+	if (sound_in(stereo, 2 * frames)) {
+		route_to(MAPPLE_AUDIO_ROUTE_RECEIVER);
+		if (receiver_said < 8) {
+			receiver_said++;
+			say("mapple: audio: the earpiece plays: %u frames from channel %s\n", (unsigned)frames, third ? "3" : "1 and 2");
+		}
+	}
+	if (route == MAPPLE_AUDIO_ROUTE_RECEIVER && sink >= 0) {
+		(void)write(sink, stereo, (size_t)frames * MAPPLE_AUDIO_FRAME);
+	}
+}
+
 static OSStatus
 do_io_operation(__unused AudioServerPlugInDriverRef driver, __unused AudioObjectID object, AudioObjectID stream,
     __unused UInt32 client, UInt32 operation, UInt32 frames, __unused const AudioServerPlugInIOCycleInfo *cycle, void *buffer,
@@ -1015,9 +1140,14 @@ do_io_operation(__unused AudioServerPlugInDriverRef driver, __unused AudioObject
 		memset(buffer, 0, (size_t)frames * 2 * d->input_channels);
 	} else if (operation == kAudioServerPlugInIOOperationWriteMix && stream == OBJECT_ACTUATOR_OUTPUT) {
 		actuator_write(buffer, frames);
+	} else if (operation == kAudioServerPlugInIOOperationWriteMix && stream == OBJECT_CODEC_OUTPUT) {
+		receiver_write(buffer, frames);
 	} else if (operation == kAudioServerPlugInIOOperationWriteMix && stream == d->output) {
 		/* the kernel takes it all or leaves it: this thread must not wait */
-		if (sink < 0 || write(sink, buffer, (size_t)frames * MAPPLE_AUDIO_FRAME) < 0) {
+		if (sound_in(buffer, (size_t)frames * MAPPLE_AUDIO_CHANNELS)) {
+			route_to(MAPPLE_AUDIO_ROUTE_SPEAKER);
+		}
+		if (route != MAPPLE_AUDIO_ROUTE_SPEAKER || sink < 0 || write(sink, buffer, (size_t)frames * MAPPLE_AUDIO_FRAME) < 0) {
 			refused += frames;
 		}
 		written += frames;

@@ -37,4 +37,9 @@ struct mapple_audio_volume {
 };
 #define MAPPLE_AUDIO_SET_VOLUME _IOW('r', 1, struct mapple_audio_volume)
 
+/* ioctl(MAPPLE_AUDIO_SET_ROUTE): where what is written plays, the speaker or the earpiece (the port Darwin has chosen). */
+#define MAPPLE_AUDIO_ROUTE_SPEAKER      0
+#define MAPPLE_AUDIO_ROUTE_RECEIVER     1
+#define MAPPLE_AUDIO_SET_ROUTE  _IOW('r', 2, uint32_t)
+
 #endif /* _SYS_MAPPLE_AUDIO_H_ */
