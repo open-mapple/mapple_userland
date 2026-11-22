@@ -1,3 +1,4 @@
+/* From HakiOS (github.com/oosexgang/hakios-xnu-kernel, MIT; see NOTICE). */
 /*
  * MappleAudio.driver: the output device of Darwin on this machine.
  *

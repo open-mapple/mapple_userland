@@ -1,3 +1,4 @@
+/* From HakiOS (github.com/oosexgang/hakios-xnu-kernel, MIT; see NOTICE). */
 /*
  * /dev/mapple-audio: the sound Darwin plays, on its way to whatever can make it heard.
  *
